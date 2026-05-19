@@ -3,9 +3,9 @@ set -eu
 
 version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
 case "$version" in
-    0.11.0) ;;
+    0.12.0) ;;
     *)
-        echo "expected current incubator version 0.11.0, got $version" >&2
+        echo "expected current incubator version 0.12.0, got $version" >&2
         exit 1
         ;;
 esac

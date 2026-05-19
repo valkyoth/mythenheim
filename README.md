@@ -28,7 +28,7 @@ the durable workflows expected from mature forum communities while keeping a
 stricter execution boundary: Rust core, SurrealDB storage, rootless Podman
 operation, and sandboxed extension points.
 
-The project started at `0.10.0` and is currently `0.11.0`. Releases before
+The project started at `0.10.0` and is currently `0.12.0`. Releases before
 `1.0.0` are incubator releases: every version has tests and docs, but public
 APIs and database schema can still change. `1.0.0` is the first stable
 production forum core.
@@ -45,7 +45,8 @@ Local development origin on this machine, when DNS/proxying is needed:
 - TOML config loader and validator.
 - Safe Markdown preview renderer backed by `pulldown-cmark` and `ammonia`.
 - Capability string validator for the RBAC/ABAC permission plan.
-- Password hashing, opaque session-token primitives, and preview auth routes.
+- Password hashing, opaque session-token primitives, preview auth routes, and
+  login lockout hooks.
 - Versioned SurrealDB schema migrations for identity, roles, sessions,
   categories, topics, posts, moderation, audit logs, and graph edges.
 - Migration validation CLI and rootless SurrealDB migration smoke test.
