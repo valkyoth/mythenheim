@@ -1,0 +1,43 @@
+[package]
+name = "mythenheim"
+version = "0.10.0"
+edition = "2024"
+rust-version = "1.95"
+license = "EUPL-1.2"
+publish = false
+description = "A security-first Rust forum platform backed by SurrealDB."
+default-run = "mythenheim"
+
+[[bin]]
+name = "mythenheim"
+path = "src/main.rs"
+required-features = ["web"]
+
+[features]
+default = ["web"]
+web = ["dep:axum", "dep:tokio", "dep:tower-http", "dep:tracing", "dep:tracing-subscriber"]
+surrealdb-client = []
+wasm-plugins = []
+themes = []
+
+[dependencies]
+ammonia = "4.1.2"
+axum = { version = "0.8.9", optional = true, features = ["json"] }
+clap = { version = "4.6.1", features = ["derive", "env"] }
+pulldown-cmark = "0.13.3"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+tokio = { version = "1.52.3", optional = true, features = ["macros", "net", "rt-multi-thread", "signal"] }
+toml = "1.1.2"
+tower-http = { version = "0.6.11", optional = true, features = ["trace"] }
+tracing = { version = "0.1.42", optional = true }
+tracing-subscriber = { version = "0.3.23", optional = true, features = ["env-filter", "fmt"] }
+
+[dev-dependencies]
+tower = { version = "0.5.2", features = ["util"] }
+
+[profile.release]
+panic = "abort"
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

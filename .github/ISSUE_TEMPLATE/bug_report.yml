@@ -1,0 +1,74 @@
+name: Bug Report
+description: Report a bug, missing behavior, or unexpected runtime issue in Mythenheim.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ### Thanks for helping improve Mythenheim.
+
+        If this is an exploitable security vulnerability, do not open a public issue. Follow the disclosure guidelines in SECURITY.md instead.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug, missing behavior, or confusing documentation.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected-behavior
+    attributes:
+      label: What did you expect to happen?
+      description: Describe the behavior or API output you expected.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: How can we reproduce it?
+      description: Provide clear steps, config, commands, or requests.
+      placeholder: |
+        1. Start Mythenheim with config...
+        2. Execute curl command...
+        3. See unexpected response...
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Mythenheim Configuration
+      description: Paste relevant configuration blocks.
+      render: toml
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Version and Build Environment
+      description: Provide exact environment details.
+      placeholder: |
+        - Mythenheim version or commit hash:
+        - Rust toolchain version, if building from source:
+        - Host OS/kernel:
+        - Deployment mechanism, for example compiled binary or rootless Podman:
+        - SurrealDB version and deployment mode:
+        - Running behind Fluxheim: yes/no:
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or Console Output
+      description: Paste relevant output. Strip private keys, cookies, auth tokens, domains, emails, user IDs, IPs, and secrets before posting.
+      render: text
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Extra Context
+      description: Add any other context about the issue.

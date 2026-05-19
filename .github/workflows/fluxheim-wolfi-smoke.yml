@@ -1,0 +1,44 @@
+name: Fluxheim Wolfi Smoke
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  smoke:
+    name: Mythenheim behind Fluxheim Wolfi
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout Mythenheim
+        uses: actions/checkout@v6
+        with:
+          path: mythenheim
+
+      - name: Checkout Fluxheim
+        uses: actions/checkout@v6
+        with:
+          repository: valkyoth/fluxheim
+          path: fluxheim
+
+      - name: Install rootless Podman
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman
+
+      - name: Install Rust toolchain
+        working-directory: mythenheim
+        run: rustup show
+
+      - name: Run Fluxheim Wolfi proxy smoke
+        working-directory: mythenheim
+        env:
+          FLUXHEIM_DIR: ${{ github.workspace }}/fluxheim
+        run: scripts/smoke_fluxheim_wolfi.sh

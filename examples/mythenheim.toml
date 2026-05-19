@@ -1,0 +1,14 @@
+[server]
+listen_addr = "127.0.0.1:37171"
+public_base_url = "https://mythenheim.eu"
+trusted_proxy_cidrs = ["127.0.0.1/32"]
+
+[database]
+endpoint = "ws://127.0.0.1:8000"
+namespace = "mythenheim"
+database = "mythenheim"
+
+[security]
+max_request_body_bytes = 1048576
+secure_cookies = true
+csp_report_only = false

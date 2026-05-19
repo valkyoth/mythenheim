@@ -1,0 +1,14 @@
+[server]
+listen_addr = "0.0.0.0:37171"
+public_base_url = "https://dev.mythenheim.eu"
+trusted_proxy_cidrs = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.1/32"]
+
+[database]
+endpoint = "ws://127.0.0.1:8000"
+namespace = "mythenheim_smoke"
+database = "mythenheim_smoke"
+
+[security]
+max_request_body_bytes = 1048576
+secure_cookies = true
+csp_report_only = false

@@ -1,0 +1,95 @@
+[server]
+listen = ["0.0.0.0:8080"]
+default_vhost = "mythenheim"
+trusted_proxies = []
+
+[server.process]
+daemon = false
+pid_file = "/run/fluxheim/fluxheim.pid"
+upgrade_sock = "/run/fluxheim/fluxheim-upgrade.sock"
+certificate_reload_sock = "/run/fluxheim/fluxheim-cert-reload.sock"
+grace_period_seconds = 2
+graceful_shutdown_timeout_seconds = 5
+
+[server.https_redirect]
+enabled = false
+status = 308
+
+[server.limits]
+max_request_header_bytes = "64KiB"
+max_uri_bytes = "8KiB"
+max_request_headers = 100
+max_request_body_bytes = "16MiB"
+
+[logging]
+level = "info"
+format = "json"
+target = "stderr"
+
+[logging.file]
+enabled = false
+append = true
+
+[logging.access]
+enabled = true
+include_host = true
+include_path = true
+request_id = true
+request_id_header = "x-request-id"
+
+[headers.request]
+enabled = true
+strip_inbound_client_ip_headers = true
+x_forwarded_for = "replace"
+x_real_ip = true
+x_forwarded_host = true
+x_forwarded_proto = true
+forwarded = false
+remove = ["x-powered-by"]
+
+[headers.request.add]
+x-proxy-by = "Fluxheim"
+x-forwarded-host = "{host}"
+
+[headers.request.append]
+via = "fluxheim"
+
+[headers.response]
+enabled = true
+x_content_type_options = "nosniff"
+x_frame_options = "DENY"
+referrer_policy = "no-referrer"
+remove = ["x-powered-by"]
+
+[headers.response.add]
+cache-control = "no-store"
+
+[headers.response.append]
+vary = ["Accept-Encoding"]
+
+[tls]
+enabled = false
+backend = "rustls"
+
+[cache]
+enabled = false
+image_extensions = ["avif", "gif", "jpeg", "jpg", "png", "svg", "webp"]
+methods = ["GET", "HEAD"]
+max_object_bytes = "32MiB"
+
+[cache.memory]
+enabled = false
+max_size_bytes = "1GiB"
+
+[cache.disk]
+enabled = false
+max_size_bytes = "10GiB"
+
+[[vhosts]]
+name = "mythenheim"
+hosts = ["mythenheim.eu", "dev.mythenheim.eu", "localhost", "127.0.0.1"]
+max_request_body_bytes = "16MiB"
+
+[vhosts.proxy]
+upstreams = ["host.containers.internal:37171"]
+upstream_tls = false

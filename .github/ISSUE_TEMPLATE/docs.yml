@@ -1,0 +1,26 @@
+name: Documentation Issue
+description: Report missing, unclear, stale, or unsafe documentation.
+title: "[Docs]: "
+labels: ["documentation"]
+body:
+  - type: textarea
+    id: issue
+    attributes:
+      label: Documentation Problem
+      description: What is missing, unclear, stale, or unsafe?
+    validations:
+      required: true
+
+  - type: textarea
+    id: location
+    attributes:
+      label: Location
+      description: Link or name the relevant README, docs page, script, config, or workflow.
+    validations:
+      required: true
+
+  - type: textarea
+    id: suggested-change
+    attributes:
+      label: Suggested Change
+      description: What should the documentation say instead?

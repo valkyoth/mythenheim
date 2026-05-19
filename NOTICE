@@ -1,0 +1,11 @@
+Mythenheim is licensed under the European Union Public Licence 1.2.
+
+Additional project notice:
+
+User-created plugins and themes that run as WebAssembly components or template
+assets are treated as user-domain works and are not automatically considered
+derivative works of Mythenheim merely because they use the documented plugin,
+theme, hook, or template interfaces. If a plugin or theme copies Mythenheim source
+code, links to private/internal Mythenheim APIs, or is distributed together with
+modified Mythenheim core code, the normal EUPL-1.2 obligations for that copied or
+modified code still apply.
