@@ -33,6 +33,8 @@ Reference: [OWASP Password Storage Cheat Sheet](https://cheatsheetseries.owasp.o
 - Failed password attempts are tracked per normalized login key.
 - Unknown login names are tracked too, so the limiter does not require proving
   that an account exists.
+- Unknown login names still run password verification against a dummy Argon2id
+  hash before returning, reducing account-enumeration timing differences.
 - Five failed attempts lock that login key for 15 minutes.
 - Locked logins return `429 Too Many Requests` with a `Retry-After` header.
 - A successful login clears previous failure state.

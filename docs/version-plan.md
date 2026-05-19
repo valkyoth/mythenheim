@@ -77,6 +77,8 @@ Done when:
 - Auth endpoints reject malformed JSON and oversized bodies.
 - Login lockout tests prove repeated bad credentials return `429` and
   `Retry-After`.
+- Unknown-login tests prove the auth store initializes a dummy password hash
+  used to reduce account-enumeration timing differences.
 
 ### 0.13.0 - Category, Topic, And Post Core
 

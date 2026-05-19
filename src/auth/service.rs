@@ -55,6 +55,7 @@ struct AuthState {
     email_hash_index: HashMap<String, String>,
     sessions: HashMap<String, StoredSession>,
     login_failures: HashMap<String, LoginFailure>,
+    dummy_password_hash: String,
 }
 
 #[derive(Debug, Clone)]
@@ -86,6 +87,10 @@ impl AuthService {
         Self {
             inner: Arc::new(Mutex::new(AuthState {
                 next_user_id: 1,
+                dummy_password_hash: hash_password(
+                    "mythenheim dummy password for login timing equalization",
+                )
+                .expect("static dummy password satisfies password policy"),
                 ..AuthState::default()
             })),
         }
@@ -149,7 +154,9 @@ impl AuthService {
                 })
                 .cloned();
             let Some(user_id) = user_id else {
+                let dummy_password_hash = state.dummy_password_hash.clone();
                 drop(state);
+                let _ = verify_password(password, &dummy_password_hash);
                 self.record_failed_login(&login_key)?;
                 return Err(AuthError::InvalidCredentials);
             };
@@ -485,6 +492,17 @@ mod tests {
             auth.login("missing-member", "wrong horse battery staple"),
             Err(AuthError::LoginRateLimited { retry_after_secs })
                 if retry_after_secs > 0 && retry_after_secs <= LOGIN_LOCKOUT_SECS
+        ));
+    }
+
+    #[test]
+    fn auth_store_has_dummy_password_hash_for_unknown_logins() {
+        let auth = AuthService::new_in_memory();
+        let state = auth.inner.lock().unwrap();
+
+        assert!(verify_password(
+            "mythenheim dummy password for login timing equalization",
+            &state.dummy_password_hash
         ));
     }
 
