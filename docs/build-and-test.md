@@ -20,7 +20,8 @@ The first gate runs:
 
 Authentication tests cover password policy, Argon2id hashing/verification,
 opaque session-token generation, secure cookie handling, and preview auth route
-behavior.
+behavior, including malformed JSON, oversized bodies, logout revocation, and
+login lockout.
 
 ## Smoke Test
 

@@ -3,7 +3,7 @@ use axum::{
     extract::{DefaultBodyLimit, State},
     http::{
         HeaderMap, HeaderValue, StatusCode,
-        header::{COOKIE, SET_COOKIE},
+        header::{COOKIE, RETRY_AFTER, SET_COOKIE},
     },
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -227,19 +227,28 @@ fn auth_error_response(err: AuthError) -> Response {
     let status = match &err {
         AuthError::DuplicateUsername | AuthError::DuplicateEmail => StatusCode::CONFLICT,
         AuthError::InvalidCredentials | AuthError::InvalidSession => StatusCode::UNAUTHORIZED,
+        AuthError::LoginRateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
         AuthError::InvalidUsername | AuthError::InvalidEmail | AuthError::Password(_) => {
             StatusCode::BAD_REQUEST
         }
         AuthError::Token(_) | AuthError::StorePoisoned => StatusCode::INTERNAL_SERVER_ERROR,
     };
 
-    (
+    let mut response = (
         status,
         Json(ErrorResponse {
             error: err.to_string(),
         }),
     )
-        .into_response()
+        .into_response();
+
+    if let AuthError::LoginRateLimited { retry_after_secs } = err
+        && let Ok(value) = HeaderValue::from_str(&retry_after_secs.to_string())
+    {
+        response.headers_mut().insert(RETRY_AFTER, value);
+    }
+
+    response
 }
 
 impl From<PublicUser> for AuthUserResponse {
@@ -262,6 +271,7 @@ mod tests {
         body::to_bytes,
         http::{Request, StatusCode, header::CONTENT_TYPE},
     };
+    use mythenheim::auth::service::LOGIN_FAILURE_LIMIT;
     use serde_json::json;
     use tower::ServiceExt;
 
@@ -389,6 +399,53 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(second.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn auth_rate_limits_repeated_failed_logins() {
+        let app = app();
+        let register = app
+            .clone()
+            .oneshot(json_request(
+                "/api/v1/auth/register",
+                json!({
+                    "username": "Member",
+                    "email": "member@example.test",
+                    "password": "correct horse battery staple"
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(register.status(), StatusCode::CREATED);
+
+        for _ in 0..LOGIN_FAILURE_LIMIT {
+            let response = app
+                .clone()
+                .oneshot(json_request(
+                    "/api/v1/auth/login",
+                    json!({
+                        "login": "member",
+                        "password": "wrong horse battery staple"
+                    }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
+
+        let response = app
+            .oneshot(json_request(
+                "/api/v1/auth/login",
+                json!({
+                    "login": "member",
+                    "password": "correct horse battery staple"
+                }),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(response.headers().contains_key(RETRY_AFTER));
     }
 
     #[tokio::test]

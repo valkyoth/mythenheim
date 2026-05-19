@@ -75,6 +75,8 @@ Done when:
   constant-time verification.
 - Session revocation tests prove old cookies stop working.
 - Auth endpoints reject malformed JSON and oversized bodies.
+- Login lockout tests prove repeated bad credentials return `429` and
+  `Retry-After`.
 
 ### 0.13.0 - Category, Topic, And Post Core
 

@@ -28,6 +28,19 @@ Reference: [OWASP Password Storage Cheat Sheet](https://cheatsheetseries.owasp.o
 - Cookie transport is `HttpOnly`, strict same-site, and `Secure` by default.
 - Tokens must be revocable server-side through the `session.revoked_at` field.
 
+## Login Abuse Controls
+
+- Failed password attempts are tracked per normalized login key.
+- Unknown login names are tracked too, so the limiter does not require proving
+  that an account exists.
+- Five failed attempts lock that login key for 15 minutes.
+- Locked logins return `429 Too Many Requests` with a `Retry-After` header.
+- A successful login clears previous failure state.
+
+This is intentionally a first in-memory hook. The persistent version must move
+the same counters into SurrealDB and add an IP/user-agent dimension before
+public deployment, so one attacker cannot cheaply lock another user's account.
+
 ## Current Implementation
 
 The current slice implements the primitives and a preview HTTP auth surface:
@@ -57,4 +70,5 @@ The first `0.12.0` HTTP slice exposes:
 
 The route tests verify registration, login, secure cookie issuance, authenticated
 identity lookup, logout revocation, duplicate username rejection, and oversized
-request rejection.
+request rejection. Unit and route tests also verify login lockout and
+`Retry-After` handling after repeated bad credentials.

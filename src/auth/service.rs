@@ -12,6 +12,8 @@ use std::{
 
 pub const SESSION_COOKIE_NAME: &str = "mythenheim_session";
 pub const SESSION_TTL_SECS: u64 = 60 * 60 * 24 * 14;
+pub const LOGIN_FAILURE_LIMIT: u32 = 5;
+pub const LOGIN_LOCKOUT_SECS: u64 = 15 * 60;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PublicUser {
@@ -34,6 +36,7 @@ pub enum AuthError {
     DuplicateUsername,
     DuplicateEmail,
     InvalidCredentials,
+    LoginRateLimited { retry_after_secs: u64 },
     InvalidSession,
     Token(String),
     StorePoisoned,
@@ -51,6 +54,7 @@ struct AuthState {
     username_index: HashMap<String, String>,
     email_hash_index: HashMap<String, String>,
     sessions: HashMap<String, StoredSession>,
+    login_failures: HashMap<String, LoginFailure>,
 }
 
 #[derive(Debug, Clone)]
@@ -69,6 +73,12 @@ struct StoredSession {
     token_hash: String,
     expires_at: SystemTime,
     revoked_at: Option<SystemTime>,
+}
+
+#[derive(Debug, Clone)]
+struct LoginFailure {
+    count: u32,
+    locked_until: Option<SystemTime>,
 }
 
 impl AuthService {
@@ -124,8 +134,11 @@ impl AuthService {
 
     pub fn login(&self, login: &str, password: &str) -> Result<LoginSession, AuthError> {
         let login_normalized = normalize_login(login)?;
+        let login_key = login_lookup_key(&login_normalized);
+        let now = SystemTime::now();
         let user = {
             let state = self.inner.lock().map_err(|_| AuthError::StorePoisoned)?;
+            reject_locked_login(&state, &login_key, now)?;
             let user_id = state
                 .username_index
                 .get(&login_normalized)
@@ -134,15 +147,21 @@ impl AuthService {
                         .email_hash_index
                         .get(&hash_lookup_value(&login_normalized))
                 })
-                .ok_or(AuthError::InvalidCredentials)?;
+                .cloned();
+            let Some(user_id) = user_id else {
+                drop(state);
+                self.record_failed_login(&login_key)?;
+                return Err(AuthError::InvalidCredentials);
+            };
             state
                 .users
-                .get(user_id)
+                .get(&user_id)
                 .cloned()
                 .ok_or(AuthError::InvalidCredentials)?
         };
 
         if !verify_password(password, &user.password_hash) {
+            self.record_failed_login(&login_key)?;
             return Err(AuthError::InvalidCredentials);
         }
 
@@ -155,6 +174,7 @@ impl AuthService {
         };
 
         let mut state = self.inner.lock().map_err(|_| AuthError::StorePoisoned)?;
+        state.login_failures.remove(&login_key);
         state
             .sessions
             .insert(session.token_hash().to_owned(), stored_session);
@@ -197,6 +217,23 @@ impl AuthService {
         session.revoked_at = Some(SystemTime::now());
         Ok(())
     }
+
+    fn record_failed_login(&self, login_key: &str) -> Result<(), AuthError> {
+        let mut state = self.inner.lock().map_err(|_| AuthError::StorePoisoned)?;
+        let failure = state
+            .login_failures
+            .entry(login_key.to_owned())
+            .or_insert(LoginFailure {
+                count: 0,
+                locked_until: None,
+            });
+        failure.count = failure.count.saturating_add(1);
+        if failure.count >= LOGIN_FAILURE_LIMIT {
+            failure.locked_until =
+                Some(SystemTime::now() + Duration::from_secs(LOGIN_LOCKOUT_SECS));
+        }
+        Ok(())
+    }
 }
 
 impl Default for AuthService {
@@ -229,6 +266,12 @@ impl fmt::Display for AuthError {
             Self::DuplicateUsername => formatter.write_str("username is already registered"),
             Self::DuplicateEmail => formatter.write_str("email is already registered"),
             Self::InvalidCredentials => formatter.write_str("invalid credentials"),
+            Self::LoginRateLimited { retry_after_secs } => {
+                write!(
+                    formatter,
+                    "too many login attempts; retry after {retry_after_secs} seconds"
+                )
+            }
             Self::InvalidSession => formatter.write_str("invalid session"),
             Self::Token(err) => write!(formatter, "session token error: {err}"),
             Self::StorePoisoned => formatter.write_str("auth store lock is poisoned"),
@@ -306,6 +349,34 @@ fn hash_lookup_value(value: &str) -> String {
     crate::auth::session::hex_encode(&hasher.finalize())
 }
 
+fn login_lookup_key(login_normalized: &str) -> String {
+    if login_normalized.contains('@') {
+        format!("email:{}", hash_lookup_value(login_normalized))
+    } else {
+        format!("username:{login_normalized}")
+    }
+}
+
+fn reject_locked_login(
+    state: &AuthState,
+    login_key: &str,
+    now: SystemTime,
+) -> Result<(), AuthError> {
+    let Some(failure) = state.login_failures.get(login_key) else {
+        return Ok(());
+    };
+    let Some(locked_until) = failure.locked_until else {
+        return Ok(());
+    };
+
+    match locked_until.duration_since(now) {
+        Ok(remaining) => Err(AuthError::LoginRateLimited {
+            retry_after_secs: remaining.as_secs().max(1),
+        }),
+        Err(_) => Ok(()),
+    }
+}
+
 fn token_error(err: SessionTokenError) -> AuthError {
     AuthError::Token(err.to_string())
 }
@@ -377,6 +448,65 @@ mod tests {
             auth.login("member", "wrong horse battery staple"),
             Err(AuthError::InvalidCredentials)
         ));
+    }
+
+    #[test]
+    fn repeated_failed_logins_are_rate_limited() {
+        let auth = AuthService::new_in_memory();
+        auth.register("Member", "member@example.test", PASSWORD)
+            .unwrap();
+
+        for _ in 0..LOGIN_FAILURE_LIMIT {
+            assert!(matches!(
+                auth.login("member", "wrong horse battery staple"),
+                Err(AuthError::InvalidCredentials)
+            ));
+        }
+
+        assert!(matches!(
+            auth.login("member", PASSWORD),
+            Err(AuthError::LoginRateLimited { retry_after_secs })
+                if retry_after_secs > 0 && retry_after_secs <= LOGIN_LOCKOUT_SECS
+        ));
+    }
+
+    #[test]
+    fn unknown_login_attempts_are_rate_limited_without_user_lookup() {
+        let auth = AuthService::new_in_memory();
+
+        for _ in 0..LOGIN_FAILURE_LIMIT {
+            assert!(matches!(
+                auth.login("missing-member", "wrong horse battery staple"),
+                Err(AuthError::InvalidCredentials)
+            ));
+        }
+
+        assert!(matches!(
+            auth.login("missing-member", "wrong horse battery staple"),
+            Err(AuthError::LoginRateLimited { retry_after_secs })
+                if retry_after_secs > 0 && retry_after_secs <= LOGIN_LOCKOUT_SECS
+        ));
+    }
+
+    #[test]
+    fn successful_login_clears_failed_attempts() {
+        let auth = AuthService::new_in_memory();
+        auth.register("Member", "member@example.test", PASSWORD)
+            .unwrap();
+
+        assert!(matches!(
+            auth.login("member", "wrong horse battery staple"),
+            Err(AuthError::InvalidCredentials)
+        ));
+        assert!(auth.login("member", PASSWORD).is_ok());
+
+        for _ in 1..LOGIN_FAILURE_LIMIT {
+            assert!(matches!(
+                auth.login("member", "wrong horse battery staple"),
+                Err(AuthError::InvalidCredentials)
+            ));
+        }
+        assert!(auth.login("member", PASSWORD).is_ok());
     }
 
     #[test]
