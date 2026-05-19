@@ -25,18 +25,36 @@ Reference: [OWASP Password Storage Cheat Sheet](https://cheatsheetseries.owasp.o
 - Primary sessions use opaque random tokens, not primary stateless JWTs.
 - A token contains 32 random bytes encoded as lowercase hexadecimal.
 - Only a SHA-256 hash of the token is intended to be stored in the database.
-- Cookie transport will be `HttpOnly`, `Secure`, and strict same-site by default
-  once HTTP auth routes are added.
+- Cookie transport is `HttpOnly`, strict same-site, and `Secure` by default.
 - Tokens must be revocable server-side through the `session.revoked_at` field.
 
 ## Current Implementation
 
-The current slice implements the primitives:
+The current slice implements the primitives and a preview HTTP auth surface:
 
 - `auth::password::hash_password`
 - `auth::password::verify_password`
 - `auth::session::NewSessionToken::generate`
 - `auth::session::hash_session_token`
 - `auth::session::verify_session_token_hash`
+- `auth::service::AuthService::register`
+- `auth::service::AuthService::login`
+- `auth::service::AuthService::authenticate`
+- `auth::service::AuthService::logout`
 
-HTTP registration/login endpoints are the next step in the `0.12.0` milestone.
+The preview service currently uses an in-memory store so route behavior can be
+tested before SurrealDB persistence is wired into the service layer. Session
+tokens are still only compared and stored in hashed form inside that store.
+
+## HTTP Preview
+
+The first `0.12.0` HTTP slice exposes:
+
+- `POST /api/v1/auth/register`
+- `POST /api/v1/auth/login`
+- `GET /api/v1/auth/me`
+- `POST /api/v1/auth/logout`
+
+The route tests verify registration, login, secure cookie issuance, authenticated
+identity lookup, logout revocation, duplicate username rejection, and oversized
+request rejection.

@@ -64,6 +64,8 @@ Scope:
 - Registration and login.
 - Opaque session tokens stored hashed server-side.
 - Secure cookie settings and logout revocation.
+- Preview HTTP endpoints for registration, login, current-user lookup, and
+  logout.
 - Account lockout and login rate-limit hooks.
 
 Done when:

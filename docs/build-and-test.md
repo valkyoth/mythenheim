@@ -18,8 +18,9 @@ The first gate runs:
 - `cargo test`
 - reduced feature build checks
 
-Authentication tests cover password policy, Argon2id hashing/verification, and
-opaque session-token generation.
+Authentication tests cover password policy, Argon2id hashing/verification,
+opaque session-token generation, secure cookie handling, and preview auth route
+behavior.
 
 ## Smoke Test
 
@@ -27,9 +28,9 @@ opaque session-token generation.
 scripts/smoke_local.sh
 ```
 
-The current smoke validates the example config through the compiled CLI path.
-Future versions will start the HTTP server, call `/healthz`, and run SurrealDB
-integration flows.
+The local smoke validates the example config through the compiled CLI path,
+starts the HTTP server on a local port, calls `/healthz`, and exercises the
+preview register/login/current-user/logout flow.
 
 ## SurrealDB Migration Smoke
 

@@ -45,6 +45,7 @@ Local development origin on this machine, when DNS/proxying is needed:
 - TOML config loader and validator.
 - Safe Markdown preview renderer backed by `pulldown-cmark` and `ammonia`.
 - Capability string validator for the RBAC/ABAC permission plan.
+- Password hashing, opaque session-token primitives, and preview auth routes.
 - Versioned SurrealDB schema migrations for identity, roles, sessions,
   categories, topics, posts, moderation, audit logs, and graph edges.
 - Migration validation CLI and rootless SurrealDB migration smoke test.
@@ -97,6 +98,14 @@ Validate and print the SurrealDB schema migrations:
 ```sh
 cargo run -- --check-migrations
 cargo run -- --print-migrations
+```
+
+Exercise the preview auth API while the local service is running:
+
+```sh
+curl -sSf -X POST http://127.0.0.1:37171/api/v1/auth/register \
+  -H 'content-type: application/json' \
+  -d '{"username":"Member","email":"member@example.test","password":"correct horse battery staple"}'
 ```
 
 Apply the generated migrations twice against a temporary rootless SurrealDB
