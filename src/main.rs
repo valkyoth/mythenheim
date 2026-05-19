@@ -1,6 +1,6 @@
 use axum::{Json, Router, routing::get};
 use clap::Parser;
-use mythenheim::{VERSION, config::AppConfig};
+use mythenheim::{VERSION, config::AppConfig, db::migrations};
 use serde::Serialize;
 use std::{net::SocketAddr, path::PathBuf};
 use tower_http::trace::TraceLayer;
@@ -13,6 +13,12 @@ struct Cli {
 
     #[arg(long)]
     check_config: bool,
+
+    #[arg(long)]
+    check_migrations: bool,
+
+    #[arg(long)]
+    print_migrations: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -28,6 +34,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     let cli = Cli::parse();
+
+    if cli.check_migrations {
+        migrations::validate(migrations::all())?;
+        println!("migrations ok: {} migration(s)", migrations::all().len());
+        return Ok(());
+    }
+
+    if cli.print_migrations {
+        print!("{}", migrations::render_all()?);
+        return Ok(());
+    }
+
     let config = AppConfig::load(&cli.config)?;
 
     if cli.check_config {

@@ -40,7 +40,9 @@ Done when:
 
 Scope:
 
-- SurrealDB connection layer.
+- SurrealDB migration definitions and CLI validation.
+- Rust SDK admission remains deferred until license metadata and selected
+  feature flags pass dependency policy.
 - Schema bootstrap for `user`, `role`, `category`, `topic`, `post`,
   `session`, and `audit_log`.
 - Migration runner with idempotency tests.
@@ -49,7 +51,7 @@ Scope:
 Done when:
 
 - Unit tests cover schema generation and migration ordering.
-- Integration tests create a temporary namespace/database in SurrealDB.
+- Integration smoke creates a temporary namespace/database in SurrealDB.
 - Failed migrations cannot partially mark themselves complete.
 
 ### 0.12.0 - Accounts And Opaque Sessions Preview

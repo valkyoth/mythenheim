@@ -28,22 +28,26 @@ the durable workflows expected from mature forum communities while keeping a
 stricter execution boundary: Rust core, SurrealDB storage, rootless Podman
 operation, and sandboxed extension points.
 
-The project starts at `0.10.0`. Releases before `1.0.0` are incubator releases:
-every version has tests and docs, but public APIs and database schema can still
-change. `1.0.0` is the first stable production forum core.
+The project started at `0.10.0` and is currently `0.11.0`. Releases before
+`1.0.0` are incubator releases: every version has tests and docs, but public
+APIs and database schema can still change. `1.0.0` is the first stable
+production forum core.
 
 Production origin: `https://mythenheim.eu`.
 
 Local development origin on this machine, when DNS/proxying is needed:
 `https://dev.mythenheim.eu`.
 
-## Current First-Commit Scope
+## Current Scope
 
 - Rust `1.95.0`, edition `2024`.
 - Axum health service.
 - TOML config loader and validator.
 - Safe Markdown preview renderer backed by `pulldown-cmark` and `ammonia`.
 - Capability string validator for the RBAC/ABAC permission plan.
+- Versioned SurrealDB schema migrations for identity, roles, sessions,
+  categories, topics, posts, moderation, audit logs, and graph edges.
+- Migration validation CLI and rootless SurrealDB migration smoke test.
 - Fluxheim-inspired checks: format, clippy, tests, release metadata, doc links.
 - Rootless Podman helper that starts SurrealDB on a random local port for tests.
 - Fluxheim Wolfi reverse-proxy smoke fixture.
@@ -87,6 +91,20 @@ scripts/start_surrealdb_test.sh
 
 The script prints a `MYTHENHEIM_DATABASE_ENDPOINT=...` line that can be used by
 future integration tests.
+
+Validate and print the SurrealDB schema migrations:
+
+```sh
+cargo run -- --check-migrations
+cargo run -- --print-migrations
+```
+
+Apply the generated migrations twice against a temporary rootless SurrealDB
+container:
+
+```sh
+scripts/smoke_surrealdb_migrations.sh
+```
 
 Run the Fluxheim Wolfi reverse-proxy smoke:
 

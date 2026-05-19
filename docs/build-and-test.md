@@ -13,6 +13,7 @@ The first gate runs:
 - `cargo fmt --all --check`
 - release metadata validation
 - Markdown link validation
+- migration validation
 - `cargo clippy --all-targets -- -D warnings`
 - `cargo test`
 - reduced feature build checks
@@ -26,6 +27,17 @@ scripts/smoke_local.sh
 The current smoke validates the example config through the compiled CLI path.
 Future versions will start the HTTP server, call `/healthz`, and run SurrealDB
 integration flows.
+
+## SurrealDB Migration Smoke
+
+```sh
+scripts/smoke_surrealdb_migrations.sh
+```
+
+This starts a temporary rootless SurrealDB container, renders the built-in
+schema migrations with `mythenheim --print-migrations`, applies them twice, and
+checks that all migration markers and core tables exist. This is the primary
+`0.11.0` integration smoke.
 
 ## Fluxheim Wolfi Proxy Smoke
 
