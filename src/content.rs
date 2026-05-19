@@ -1,5 +1,5 @@
 use ammonia::Builder;
-use pulldown_cmark::{Options, Parser, html};
+use pulldown_cmark::{Event, Options, Parser, html};
 
 pub fn render_markdown_safe(markdown: &str) -> String {
     let mut options = Options::empty();
@@ -7,7 +7,8 @@ pub fn render_markdown_safe(markdown: &str) -> String {
     options.insert(Options::ENABLE_TABLES);
     options.insert(Options::ENABLE_TASKLISTS);
 
-    let parser = Parser::new_ext(markdown, options);
+    let parser = Parser::new_ext(markdown, options)
+        .filter(|event| !matches!(event, Event::Html(_) | Event::InlineHtml(_)));
     let mut rendered = String::new();
     html::push_html(&mut rendered, parser);
 
@@ -30,7 +31,7 @@ mod tests {
         let html = render_markdown_safe("<script>alert('xss')</script>safe");
 
         assert!(!html.contains("<script"));
-        assert!(html.contains("safe"));
+        assert!(!html.contains("alert"));
     }
 
     #[test]
@@ -38,6 +39,15 @@ mod tests {
         let html = render_markdown_safe("[bad](javascript:alert(1))");
 
         assert!(!html.contains("javascript:"));
+        assert!(html.contains("bad"));
+    }
+
+    #[test]
+    fn strips_unsafe_image_links() {
+        let html = render_markdown_safe("![bad](javascript:alert(1))");
+
+        assert!(!html.contains("javascript:"));
+        assert!(!html.contains("src="));
         assert!(html.contains("bad"));
     }
 }

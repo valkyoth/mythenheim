@@ -80,4 +80,50 @@ if [ "$status_after_logout" != "401" ]; then
     exit 1
 fi
 
-echo "smoke local: config and auth api ok on 127.0.0.1:$port"
+curl -sSf \
+    -X POST "http://127.0.0.1:$port/api/v1/auth/login" \
+    -H "content-type: application/json" \
+    -c "$cookie_jar" \
+    -d "$login_body" >/dev/null
+
+category_body="{\"name\":\"Smoke Forum $port\",\"description\":\"Local smoke forum\"}"
+category_json="$(curl -sSf \
+    -X POST "http://127.0.0.1:$port/api/v1/categories" \
+    -H "content-type: application/json" \
+    -b "$cookie_jar" \
+    -d "$category_body")"
+category_id="$(printf '%s' "$category_json" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')"
+if [ -z "$category_id" ]; then
+    echo "failed to parse category id from forum smoke response" >&2
+    exit 1
+fi
+
+topic_body="{\"title\":\"Smoke Topic $port\",\"content\":\"hello **forum**\"}"
+topic_json="$(curl -sSf \
+    -X POST "http://127.0.0.1:$port/api/v1/categories/$category_id/topics" \
+    -H "content-type: application/json" \
+    -b "$cookie_jar" \
+    -d "$topic_body")"
+topic_id="$(printf '%s' "$topic_json" | sed -n 's/.*"topic":{"id":"\([^"]*\)".*/\1/p')"
+if [ -z "$topic_id" ]; then
+    echo "failed to parse topic id from forum smoke response" >&2
+    exit 1
+fi
+
+reply_body="{\"content\":\"smoke reply\"}"
+curl -sSf \
+    -X POST "http://127.0.0.1:$port/api/v1/topics/$topic_id/posts" \
+    -H "content-type: application/json" \
+    -b "$cookie_jar" \
+    -d "$reply_body" >/dev/null
+
+topic_loaded="$(curl -sSf "http://127.0.0.1:$port/api/v1/topics/$topic_id")"
+case "$topic_loaded" in
+    *"\"reply_count\":1"* | *"\"reply_count\": 1"*) ;;
+    *)
+        echo "topic response did not include expected reply count" >&2
+        exit 1
+        ;;
+esac
+
+echo "smoke local: config, auth api, and forum api ok on 127.0.0.1:$port"

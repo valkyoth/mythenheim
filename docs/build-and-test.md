@@ -32,7 +32,8 @@ scripts/smoke_local.sh
 
 The local smoke validates the example config through the compiled CLI path,
 starts the HTTP server on a local port, calls `/healthz`, and exercises the
-preview register/login/current-user/logout flow.
+preview register/login/current-user/logout flow plus category/topic/reply
+creation.
 
 ## SurrealDB Migration Smoke
 

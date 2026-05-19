@@ -90,6 +90,12 @@ Scope:
 - Markdown to sanitized HTML persistence.
 - Slugs, pagination, soft delete primitives.
 
+Current preview:
+
+- In-memory category, topic, first-post, and reply service.
+- Public read API and session-required write API.
+- Sanitized Markdown persistence shape with raw HTML dropped before rendering.
+
 Done when:
 
 - XSS fixture tests cover Markdown, raw HTML, links, and images.

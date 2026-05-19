@@ -47,6 +47,7 @@ Local development origin on this machine, when DNS/proxying is needed:
 - Capability string validator for the RBAC/ABAC permission plan.
 - Password hashing, opaque session-token primitives, preview auth routes, and
   login lockout hooks.
+- Preview category/topic/post API with sanitized Markdown rendering.
 - Versioned SurrealDB schema migrations for identity, roles, sessions,
   categories, topics, posts, moderation, audit logs, and graph edges.
 - Migration validation CLI and rootless SurrealDB migration smoke test.
@@ -132,6 +133,7 @@ and `dev.mythenheim.eu` through the proxy.
 - [Version plan](docs/version-plan.md)
 - [Build and test guide](docs/build-and-test.md)
 - [Authentication and session plan](docs/auth-session-plan.md)
+- [Forum core preview](docs/forum-core-preview.md)
 - [Rootless SurrealDB testing](docs/surrealdb-test-podman.md)
 - [Fluxheim proxy deployment](docs/fluxheim-proxy.md)
 - [Observability plan](docs/observability.md)
