@@ -121,6 +121,7 @@ and `dev.mythenheim.eu` through the proxy.
 - [Forum feature investigation](docs/forum-feature-investigation.md)
 - [Version plan](docs/version-plan.md)
 - [Build and test guide](docs/build-and-test.md)
+- [Authentication and session plan](docs/auth-session-plan.md)
 - [Rootless SurrealDB testing](docs/surrealdb-test-podman.md)
 - [Fluxheim proxy deployment](docs/fluxheim-proxy.md)
 - [Observability plan](docs/observability.md)

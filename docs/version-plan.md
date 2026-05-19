@@ -58,8 +58,10 @@ Done when:
 
 Scope:
 
+- Password policy, Argon2id hashing, and verification primitives.
+- Opaque session token generation, server-side token hashing, and constant-time
+  token hash verification.
 - Registration and login.
-- Argon2id password hashing with current OWASP-tuned parameters.
 - Opaque session tokens stored hashed server-side.
 - Secure cookie settings and logout revocation.
 - Account lockout and login rate-limit hooks.
@@ -67,6 +69,8 @@ Scope:
 Done when:
 
 - Password hash tests verify successful and failed verification.
+- Session token tests verify random generation, hashed storage shape, and
+  constant-time verification.
 - Session revocation tests prove old cookies stop working.
 - Auth endpoints reject malformed JSON and oversized bodies.
 

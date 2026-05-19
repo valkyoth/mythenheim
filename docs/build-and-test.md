@@ -18,6 +18,9 @@ The first gate runs:
 - `cargo test`
 - reduced feature build checks
 
+Authentication tests cover password policy, Argon2id hashing/verification, and
+opaque session-token generation.
+
 ## Smoke Test
 
 ```sh
