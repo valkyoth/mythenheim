@@ -21,10 +21,24 @@ databases should use a named volume and a separate script once schema migration
 tests exist.
 
 The `0.11.0` migration preview deliberately uses generated SurrealQL and the
-SurrealDB container CLI instead of adding the Rust SDK crate. Current crate
-metadata for the latest beta SDK reports an unknown license to Cargo tooling,
-so Mythenheim keeps `cargo-deny` strict until the dependency can be admitted
-with clear license metadata and a reviewed feature set.
+SurrealDB container CLI instead of adding the Rust SDK crate.
+
+The official SurrealDB license FAQ says SDKs and libraries are released under
+Apache-2.0 or MIT, and that the BSL restriction on core database code is about
+offering SurrealDB commercially as DBaaS. That is compatible with Mythenheim's
+intended self-hosted forum use. The Rust SDK crate still needs a separate
+security gate before admission: enabling the current latest `surrealdb` crate
+for Rust pulls `rsa` through `jsonwebtoken` in `surrealdb-core`, and RustSec
+currently reports `RUSTSEC-2023-0071` with no safe upgrade. Under Mythenheim's
+security policy, that blocks committing the SDK dependency until the upstream
+graph no longer contains the vulnerable RSA path or we can prove the path is
+unreachable and accept the residual risk explicitly.
+
+References:
+
+- [SurrealDB license FAQ](https://surrealdb.com/license)
+- [SurrealDB Rust SDK docs](https://surrealdb.com/docs/languages/rust/overview)
+- [RustSec RUSTSEC-2023-0071](https://rustsec.org/advisories/RUSTSEC-2023-0071)
 
 Security rules:
 

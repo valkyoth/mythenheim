@@ -68,7 +68,12 @@ Then run:
 
 ```sh
 cargo deny check
+cargo deny --all-features check
 cargo audit
 ```
+
+`cargo deny --all-features check` is required before admitting optional
+dependency features. It caught the current Rust SDK dependency graph pulling a
+known vulnerable RSA crate, so the SDK remains excluded for now.
 
 CI runs these after the project check script.

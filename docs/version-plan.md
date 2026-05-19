@@ -41,8 +41,8 @@ Done when:
 Scope:
 
 - SurrealDB migration definitions and CLI validation.
-- Rust SDK admission remains deferred until license metadata and selected
-  feature flags pass dependency policy.
+- Rust SDK admission remains deferred until selected feature flags pass the
+  all-feature security policy.
 - Schema bootstrap for `user`, `role`, `category`, `topic`, `post`,
   `session`, and `audit_log`.
 - Migration runner with idempotency tests.
