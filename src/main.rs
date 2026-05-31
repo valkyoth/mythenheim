@@ -24,7 +24,7 @@ use mythenheim::{
     moderation::{
         ApprovalItem, AuditAction, AuditEvent, JobRunSummary, JobStatus, MacroExecution,
         ModerationError, ModerationJob, ModerationMacroAction, ModerationService, QueueStatus,
-        Report, UserModerationState, Warning,
+        Report, StoredModerationMacro, UserModerationState, Warning,
     },
     permissions::{
         ActorPermissions, Capability, PermissionContext, PermissionService, Role, TrustLevel,
@@ -127,6 +127,13 @@ struct ResolveQueueItemRequest {
 
 #[derive(Debug, Deserialize)]
 struct ExecuteModerationMacroRequest {
+    actions: Vec<ModerationMacroActionRequest>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateModerationMacroRequest {
+    name: String,
+    description: Option<String>,
     actions: Vec<ModerationMacroActionRequest>,
 }
 
@@ -321,6 +328,20 @@ struct MacroExecutionResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct StoredModerationMacrosResponse {
+    macros: Vec<StoredModerationMacroResponse>,
+}
+
+#[derive(Debug, Serialize)]
+struct StoredModerationMacroResponse {
+    id: String,
+    name: String,
+    description: Option<String>,
+    created_by: String,
+    actions: Vec<ModerationMacroActionResponse>,
+}
+
+#[derive(Debug, Serialize)]
 struct ModerationJobResponse {
     id: String,
     actor_id: String,
@@ -474,6 +495,18 @@ fn app_with_state(state: AppState, max_request_body_bytes: usize) -> Router {
             post(expire_warning),
         )
         .route("/api/v1/moderation/macros/execute", post(execute_macro))
+        .route(
+            "/api/v1/moderation/macros",
+            get(list_stored_macros).post(create_stored_macro),
+        )
+        .route(
+            "/api/v1/moderation/macros/{macro_id}",
+            get(get_stored_macro),
+        )
+        .route(
+            "/api/v1/moderation/macros/{macro_id}/execute",
+            post(execute_stored_macro),
+        )
         .route("/api/v1/moderation/jobs", post(schedule_job))
         .route("/api/v1/moderation/jobs/run-due", post(run_due_jobs))
         .route("/api/v1/moderation/jobs/{job_id}", get(get_job))
@@ -1019,6 +1052,98 @@ async fn execute_macro(
     }
 }
 
+async fn create_stored_macro(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<CreateModerationMacroRequest>,
+) -> Response {
+    let Some(user) = authenticated_user(&state, &headers) else {
+        return auth_error_response(AuthError::InvalidSession);
+    };
+    if !has_capability(&state, &user, "moderation.macro.write", None, None) {
+        return forum_error_response(ForumError::Forbidden);
+    }
+    let actions = payload
+        .actions
+        .into_iter()
+        .map(ModerationMacroAction::from)
+        .collect::<Vec<_>>();
+
+    match state.moderation.create_macro(
+        &user.id,
+        &payload.name,
+        payload.description.as_deref(),
+        actions,
+    ) {
+        Ok(stored) => (
+            StatusCode::CREATED,
+            Json(StoredModerationMacroResponse::from(stored)),
+        )
+            .into_response(),
+        Err(err) => moderation_error_response(err),
+    }
+}
+
+async fn list_stored_macros(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let Some(user) = authenticated_user(&state, &headers) else {
+        return auth_error_response(AuthError::InvalidSession);
+    };
+    if !has_capability(&state, &user, "moderation.macro.read", None, None) {
+        return forum_error_response(ForumError::Forbidden);
+    }
+
+    match state.moderation.macros() {
+        Ok(macros) => Json(StoredModerationMacrosResponse {
+            macros: macros
+                .into_iter()
+                .map(StoredModerationMacroResponse::from)
+                .collect(),
+        })
+        .into_response(),
+        Err(err) => moderation_error_response(err),
+    }
+}
+
+async fn get_stored_macro(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Path(macro_id): axum::extract::Path<String>,
+) -> Response {
+    let Some(user) = authenticated_user(&state, &headers) else {
+        return auth_error_response(AuthError::InvalidSession);
+    };
+    if !has_capability(&state, &user, "moderation.macro.read", None, None) {
+        return forum_error_response(ForumError::Forbidden);
+    }
+
+    match state.moderation.macro_by_id(&macro_id) {
+        Ok(stored) => Json(StoredModerationMacroResponse::from(stored)).into_response(),
+        Err(err) => moderation_error_response(err),
+    }
+}
+
+async fn execute_stored_macro(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Path(macro_id): axum::extract::Path<String>,
+) -> Response {
+    let Some(user) = authenticated_user(&state, &headers) else {
+        return auth_error_response(AuthError::InvalidSession);
+    };
+    if !has_capability(&state, &user, "moderation.macro.execute", None, None) {
+        return forum_error_response(ForumError::Forbidden);
+    }
+
+    match state.moderation.execute_stored_macro(&user.id, &macro_id) {
+        Ok(execution) => (
+            StatusCode::CREATED,
+            Json(MacroExecutionResponse::from(execution)),
+        )
+            .into_response(),
+        Err(err) => moderation_error_response(err),
+    }
+}
+
 async fn schedule_job(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1229,12 +1354,16 @@ fn moderation_error_response(err: ModerationError) -> Response {
     let status = match &err {
         ModerationError::InvalidReason
         | ModerationError::InvalidPoints
-        | ModerationError::EmptyMacro => StatusCode::BAD_REQUEST,
+        | ModerationError::EmptyMacro
+        | ModerationError::InvalidMacroName => StatusCode::BAD_REQUEST,
         ModerationError::ReportNotFound
         | ModerationError::ApprovalNotFound
         | ModerationError::WarningNotFound
+        | ModerationError::MacroNotFound
         | ModerationError::JobNotFound => StatusCode::NOT_FOUND,
-        ModerationError::AlreadyResolved => StatusCode::CONFLICT,
+        ModerationError::AlreadyResolved | ModerationError::DuplicateMacroName => {
+            StatusCode::CONFLICT
+        }
         ModerationError::WarningInactive => StatusCode::CONFLICT,
         ModerationError::StorePoisoned => StatusCode::INTERNAL_SERVER_ERROR,
     };
@@ -1391,6 +1520,22 @@ impl From<MacroExecution> for MacroExecutionResponse {
         Self {
             action_count: execution.action_count,
             audit_event_count: execution.audit_event_count,
+        }
+    }
+}
+
+impl From<StoredModerationMacro> for StoredModerationMacroResponse {
+    fn from(stored: StoredModerationMacro) -> Self {
+        Self {
+            id: stored.id,
+            name: stored.name,
+            description: stored.description,
+            created_by: stored.created_by,
+            actions: stored
+                .actions
+                .into_iter()
+                .map(ModerationMacroActionResponse::from)
+                .collect(),
         }
     }
 }
@@ -2772,6 +2917,165 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn staff_can_create_list_read_and_execute_stored_macro() {
+        let moderation = ModerationService::new_in_memory();
+        moderation
+            .report("user:reporter", "post:1", "spam")
+            .unwrap();
+        let app = app_with_state(
+            AppState {
+                auth: AuthService::new_in_memory(),
+                forum: ForumService::new_in_memory(),
+                moderation,
+                permissions: staff_permission_service(),
+                secure_cookies: true,
+            },
+            1_048_576,
+        );
+        let cookie = register_and_login(&app).await;
+
+        let create_response = app
+            .clone()
+            .oneshot(json_request_with_cookie(
+                "/api/v1/moderation/macros",
+                &cookie,
+                json!({
+                    "name": "Spam Cleanup",
+                    "description": "Resolve report and warn author",
+                    "actions": [
+                        {
+                            "type": "resolve_report",
+                            "report_id": "report:1",
+                            "resolution": "removed spam"
+                        },
+                        {
+                            "type": "issue_warning",
+                            "target_user_id": "user:target",
+                            "target_id": "post:1",
+                            "reason": "posted spam",
+                            "points": 5
+                        }
+                    ]
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(create_response.status(), StatusCode::CREATED);
+        let created = body_json(create_response).await;
+        assert_eq!(created["id"], "macro:1");
+        assert_eq!(created["name"], "Spam Cleanup");
+        assert_eq!(created["actions"][0]["type"], "resolve_report");
+
+        let list_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/moderation/macros")
+                    .header(COOKIE, cookie.as_str())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(list_response.status(), StatusCode::OK);
+        let listed = body_json(list_response).await;
+        assert_eq!(listed["macros"].as_array().unwrap().len(), 1);
+        assert_eq!(listed["macros"][0]["created_by"], "user:1");
+
+        let get_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/moderation/macros/macro:1")
+                    .header(COOKIE, cookie.as_str())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(get_response.status(), StatusCode::OK);
+        assert_eq!(
+            body_json(get_response).await["description"],
+            "Resolve report and warn author"
+        );
+
+        let execute_response = app
+            .clone()
+            .oneshot(json_request_with_cookie(
+                "/api/v1/moderation/macros/macro:1/execute",
+                &cookie,
+                json!({}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(execute_response.status(), StatusCode::CREATED);
+        let execution = body_json(execute_response).await;
+        assert_eq!(execution["action_count"], 2);
+        assert_eq!(execution["audit_event_count"], 2);
+
+        let reports_response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/moderation/reports")
+                    .header(COOKIE, cookie.as_str())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            body_json(reports_response).await["reports"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn stored_macro_api_requires_capabilities() {
+        let app = app();
+        let cookie = register_and_login(&app).await;
+
+        let create_response = app
+            .clone()
+            .oneshot(json_request_with_cookie(
+                "/api/v1/moderation/macros",
+                &cookie,
+                json!({
+                    "name": "Spam Cleanup",
+                    "description": null,
+                    "actions": []
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(create_response.status(), StatusCode::FORBIDDEN);
+
+        let list_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/moderation/macros")
+                    .header(COOKIE, cookie.as_str())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(list_response.status(), StatusCode::FORBIDDEN);
+
+        let execute_response = app
+            .oneshot(json_request_with_cookie(
+                "/api/v1/moderation/macros/macro:1/execute",
+                &cookie,
+                json!({}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(execute_response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
     async fn staff_can_schedule_run_and_read_moderation_job() {
         let moderation = ModerationService::new_in_memory();
         moderation
@@ -3010,6 +3314,8 @@ mod tests {
                 Capability::parse_static("post.delete.own"),
                 Capability::parse_static("moderation.queue.read"),
                 Capability::parse_static("moderation.queue.write"),
+                Capability::parse_static("moderation.macro.read"),
+                Capability::parse_static("moderation.macro.write"),
                 Capability::parse_static("moderation.macro.execute"),
                 Capability::parse_static("moderation.job.read"),
                 Capability::parse_static("moderation.job.write"),

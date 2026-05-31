@@ -16,6 +16,8 @@ APIs.
   and new user moderation state where the action changes a user.
 - `ModerationMacroAction` describes reusable moderation action sequences such
   as resolving a report, warning a user, and shadowbanning the same account.
+- `StoredModerationMacro` stores a named, reusable macro definition with a
+  creator and validated action list.
 - `ModerationJob` stores a delayed macro action list with a due tick and
   pending, completed, or failed status.
 
@@ -29,6 +31,10 @@ APIs.
 - `POST /api/v1/moderation/warnings`
 - `POST /api/v1/moderation/warnings/{warning_id}/expire`
 - `POST /api/v1/moderation/macros/execute`
+- `GET /api/v1/moderation/macros`
+- `POST /api/v1/moderation/macros`
+- `GET /api/v1/moderation/macros/{macro_id}`
+- `POST /api/v1/moderation/macros/{macro_id}/execute`
 - `POST /api/v1/moderation/jobs`
 - `POST /api/v1/moderation/jobs/run-due`
 - `GET /api/v1/moderation/jobs/{job_id}`
@@ -37,10 +43,11 @@ APIs.
 
 Reporting a post requires an authenticated user and the post must be visible to
 that user. Queue reads require `moderation.queue.read`, queue resolution
-requires `moderation.queue.write`, moderation macro execution requires
-`moderation.macro.execute`, warning issuance and expiration require `user.warn`,
-shadowban changes require `user.shadowban`, and audit reads require
-`audit.read`.
+requires `moderation.queue.write`, ad-hoc and stored moderation macro execution
+requires `moderation.macro.execute`, stored macro reads require
+`moderation.macro.read`, stored macro creation requires `moderation.macro.write`,
+warning issuance and expiration require `user.warn`, shadowban changes require
+`user.shadowban`, and audit reads require `audit.read`.
 Delayed moderation job reads require `moderation.job.read`. Scheduling jobs
 and running due jobs require `moderation.job.write`.
 
@@ -62,6 +69,8 @@ and running due jobs require `moderation.job.write`.
 - Moderation macros execute transactionally in the preview service and API: if
   any action fails, no queue, warning, user-state, or audit changes from that
   macro are committed.
+- Stored moderation macro names are required, length-limited, case-insensitively
+  unique, and must contain at least one action.
 - Delayed moderation jobs execute due macro action lists once. Successful jobs
   are marked completed; failed jobs keep their previous queue/user/audit state
   untouched and record the failure message.
@@ -70,5 +79,5 @@ and running due jobs require `moderation.job.write`.
 
 ## Current Limits
 
-The service is still in-memory. Persistent queues, staff dashboard routes, and
-stored macro definitions remain follow-up `0.15.0` work.
+The service is still in-memory. Persistent queues and staff dashboard routes
+remain follow-up `0.15.0` work.

@@ -5,6 +5,7 @@ use std::{
 };
 
 pub const MAX_MODERATION_REASON_LEN: usize = 1_000;
+pub const MAX_MODERATION_MACRO_NAME_LEN: usize = 120;
 pub const MUTE_WARNING_POINTS: u32 = 5;
 pub const BAN_WARNING_POINTS: u32 = 10;
 
@@ -67,6 +68,15 @@ pub enum ModerationMacroAction {
 pub struct MacroExecution {
     pub action_count: usize,
     pub audit_event_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredModerationMacro {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub created_by: String,
+    pub actions: Vec<ModerationMacroAction>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -139,6 +149,9 @@ pub enum ModerationError {
     AlreadyResolved,
     WarningInactive,
     EmptyMacro,
+    InvalidMacroName,
+    DuplicateMacroName,
+    MacroNotFound,
     JobNotFound,
     StorePoisoned,
 }
@@ -153,6 +166,7 @@ struct ModerationState {
     next_report_id: u64,
     next_approval_id: u64,
     next_warning_id: u64,
+    next_macro_id: u64,
     next_job_id: u64,
     next_audit_id: u64,
     reports: HashMap<String, Report>,
@@ -160,6 +174,8 @@ struct ModerationState {
     warnings: HashMap<String, Warning>,
     warning_ids_by_user: HashMap<String, Vec<String>>,
     users: HashMap<String, UserModerationState>,
+    macros: HashMap<String, StoredModerationMacro>,
+    macro_ids_by_name: HashMap<String, String>,
     jobs: HashMap<String, ModerationJob>,
     audit_events: Vec<AuditEvent>,
 }
@@ -171,6 +187,7 @@ impl ModerationService {
                 next_report_id: 1,
                 next_approval_id: 1,
                 next_warning_id: 1,
+                next_macro_id: 1,
                 next_job_id: 1,
                 next_audit_id: 1,
                 ..ModerationState::default()
@@ -364,6 +381,81 @@ impl ModerationService {
             .lock()
             .map_err(|_| ModerationError::StorePoisoned)?;
         execute_macro_in_state(&mut state, actor_id, actions)
+    }
+
+    pub fn create_macro(
+        &self,
+        actor_id: &str,
+        name: &str,
+        description: Option<&str>,
+        actions: Vec<ModerationMacroAction>,
+    ) -> Result<StoredModerationMacro, ModerationError> {
+        let name = clean_macro_name(name)?;
+        let name_key = macro_name_key(&name);
+        let description = clean_optional_reason(description)?;
+        if actions.is_empty() {
+            return Err(ModerationError::EmptyMacro);
+        }
+
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| ModerationError::StorePoisoned)?;
+        if state.macro_ids_by_name.contains_key(&name_key) {
+            return Err(ModerationError::DuplicateMacroName);
+        }
+
+        let stored = StoredModerationMacro {
+            id: format!("macro:{}", state.next_macro_id),
+            name,
+            description,
+            created_by: actor_id.to_owned(),
+            actions,
+        };
+        state.next_macro_id += 1;
+        state.macro_ids_by_name.insert(name_key, stored.id.clone());
+        state.macros.insert(stored.id.clone(), stored.clone());
+        Ok(stored)
+    }
+
+    pub fn macros(&self) -> Result<Vec<StoredModerationMacro>, ModerationError> {
+        let state = self
+            .inner
+            .lock()
+            .map_err(|_| ModerationError::StorePoisoned)?;
+        let mut macros = state.macros.values().cloned().collect::<Vec<_>>();
+        macros.sort_by(|left, right| left.id.cmp(&right.id));
+        Ok(macros)
+    }
+
+    pub fn macro_by_id(&self, macro_id: &str) -> Result<StoredModerationMacro, ModerationError> {
+        let state = self
+            .inner
+            .lock()
+            .map_err(|_| ModerationError::StorePoisoned)?;
+        state
+            .macros
+            .get(macro_id)
+            .cloned()
+            .ok_or(ModerationError::MacroNotFound)
+    }
+
+    pub fn execute_stored_macro(
+        &self,
+        actor_id: &str,
+        macro_id: &str,
+    ) -> Result<MacroExecution, ModerationError> {
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| ModerationError::StorePoisoned)?;
+        let actions = state
+            .macros
+            .get(macro_id)
+            .ok_or(ModerationError::MacroNotFound)?
+            .actions
+            .clone();
+        execute_macro_in_state(&mut state, actor_id, &actions)
     }
 
     pub fn schedule_job(
@@ -618,6 +710,9 @@ impl fmt::Display for ModerationError {
             Self::AlreadyResolved => formatter.write_str("moderation item is already resolved"),
             Self::WarningInactive => formatter.write_str("warning is already inactive"),
             Self::EmptyMacro => formatter.write_str("moderation macro must contain actions"),
+            Self::InvalidMacroName => formatter.write_str("invalid moderation macro name"),
+            Self::DuplicateMacroName => formatter.write_str("moderation macro name already exists"),
+            Self::MacroNotFound => formatter.write_str("moderation macro not found"),
             Self::JobNotFound => formatter.write_str("moderation job not found"),
             Self::StorePoisoned => formatter.write_str("moderation store lock is poisoned"),
         }
@@ -860,6 +955,24 @@ fn clean_reason(value: &str) -> Result<String, ModerationError> {
     } else {
         Ok(trimmed.to_owned())
     }
+}
+
+fn clean_optional_reason(value: Option<&str>) -> Result<Option<String>, ModerationError> {
+    value.map(clean_reason).transpose()
+}
+
+fn clean_macro_name(value: &str) -> Result<String, ModerationError> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || trimmed.len() > MAX_MODERATION_MACRO_NAME_LEN || trimmed.contains('\0')
+    {
+        Err(ModerationError::InvalidMacroName)
+    } else {
+        Ok(trimmed.to_owned())
+    }
+}
+
+fn macro_name_key(value: &str) -> String {
+    value.trim().to_ascii_lowercase()
 }
 
 fn recompute_user_state(state: &mut ModerationState, user_id: &str) {
@@ -1248,6 +1361,122 @@ mod tests {
         assert_eq!(
             moderation.execute_macro("user:mod", &[]).unwrap_err(),
             ModerationError::EmptyMacro
+        );
+    }
+
+    #[test]
+    fn stores_and_executes_named_moderation_macros() {
+        let moderation = ModerationService::new_in_memory();
+        let report = moderation.report("user:1", "post:1", "spam").unwrap();
+        let stored = moderation
+            .create_macro(
+                "user:mod",
+                "  Spam Cleanup  ",
+                Some("Resolve a spam report and warn the author"),
+                vec![
+                    ModerationMacroAction::ResolveReport {
+                        report_id: report.id,
+                        resolution: "removed spam".to_owned(),
+                    },
+                    ModerationMacroAction::IssueWarning {
+                        target_user_id: "user:1".to_owned(),
+                        target_id: Some("post:1".to_owned()),
+                        reason: "posted spam".to_owned(),
+                        points: 5,
+                    },
+                ],
+            )
+            .unwrap();
+
+        assert_eq!(stored.id, "macro:1");
+        assert_eq!(stored.name, "Spam Cleanup");
+        assert_eq!(
+            moderation.macro_by_id("macro:1").unwrap().description,
+            Some("Resolve a spam report and warn the author".to_owned())
+        );
+        assert_eq!(moderation.macros().unwrap().len(), 1);
+
+        let execution = moderation
+            .execute_stored_macro("user:mod", "macro:1")
+            .unwrap();
+
+        assert_eq!(
+            execution,
+            MacroExecution {
+                action_count: 2,
+                audit_event_count: 2,
+            }
+        );
+        assert!(moderation.open_reports().unwrap().is_empty());
+        assert_eq!(
+            moderation
+                .user_state("user:1")
+                .unwrap()
+                .active_warning_points,
+            5
+        );
+    }
+
+    #[test]
+    fn stored_macros_validate_name_uniqueness_and_actions() {
+        let moderation = ModerationService::new_in_memory();
+
+        assert_eq!(
+            moderation
+                .create_macro(
+                    "user:mod",
+                    "   ",
+                    None,
+                    vec![ModerationMacroAction::SetShadowban {
+                        target_user_id: "user:1".to_owned(),
+                        shadowbanned: true,
+                    }],
+                )
+                .unwrap_err(),
+            ModerationError::InvalidMacroName
+        );
+        assert_eq!(
+            moderation
+                .create_macro("user:mod", "Empty Macro", None, Vec::new())
+                .unwrap_err(),
+            ModerationError::EmptyMacro
+        );
+
+        moderation
+            .create_macro(
+                "user:mod",
+                "Spam Cleanup",
+                None,
+                vec![ModerationMacroAction::SetShadowban {
+                    target_user_id: "user:1".to_owned(),
+                    shadowbanned: true,
+                }],
+            )
+            .unwrap();
+
+        assert_eq!(
+            moderation
+                .create_macro(
+                    "user:mod",
+                    "spam cleanup",
+                    None,
+                    vec![ModerationMacroAction::SetShadowban {
+                        target_user_id: "user:2".to_owned(),
+                        shadowbanned: true,
+                    }],
+                )
+                .unwrap_err(),
+            ModerationError::DuplicateMacroName
+        );
+        assert_eq!(
+            moderation.macro_by_id("macro:missing").unwrap_err(),
+            ModerationError::MacroNotFound
+        );
+        assert_eq!(
+            moderation
+                .execute_stored_macro("user:mod", "macro:missing")
+                .unwrap_err(),
+            ModerationError::MacroNotFound
         );
     }
 

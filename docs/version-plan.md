@@ -159,6 +159,8 @@ Current preview:
 - Warning expiration that marks warnings inactive, recomputes points, and
   audits the state transition.
 - Transactional moderation macro execution in the preview service.
+- Stored moderation macro definitions with preview routes to create, list,
+  read, and execute reusable action lists.
 - Delayed moderation jobs that execute due macro action lists once and preserve
   state on failed jobs.
 - Preview HTTP routes to schedule delayed moderation jobs, run due jobs, and
@@ -171,8 +173,9 @@ Current preview:
   staff actions.
 - Staff-facing moderation routes require explicit capabilities such as
   `moderation.queue.read`, `moderation.queue.write`, `user.warn`,
-  `user.shadowban`, `moderation.macro.execute`, `moderation.job.read`,
-  `moderation.job.write`, and `audit.read`.
+  `user.shadowban`, `moderation.macro.read`, `moderation.macro.write`,
+  `moderation.macro.execute`, `moderation.job.read`, `moderation.job.write`,
+  and `audit.read`.
 
 Done when:
 
