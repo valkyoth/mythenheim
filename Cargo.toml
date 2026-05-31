@@ -2,7 +2,7 @@
 name = "mythenheim"
 version = "0.12.0"
 edition = "2024"
-rust-version = "1.95"
+rust-version = "1.96"
 license = "EUPL-1.2"
 publish = false
 description = "A security-first Rust forum platform backed by SurrealDB."

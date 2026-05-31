@@ -1,4 +1,4 @@
-FROM docker.io/library/rust:1.95-slim AS build
+FROM docker.io/library/rust:1.96-slim AS build
 WORKDIR /src
 COPY . .
 RUN cargo build --release

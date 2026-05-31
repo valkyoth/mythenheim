@@ -19,7 +19,7 @@ Security fixes should be backported to the latest stable minor when practical.
 
 Scope:
 
-- Rust 1.95 toolchain pin.
+- Rust 1.96 toolchain pin.
 - EUPL-1.2 license and plugin/theme notice.
 - Axum health service.
 - Config parser and `--check-config`.
