@@ -27,6 +27,7 @@ Scope:
 - Capability string validation.
 - GitHub CI, check script, release metadata validation, doc link validation.
 - Binary portability CI for Linux, Windows, macOS, and a FreeBSD target check.
+- Native release binary packaging script and release artifact documentation.
 - Rootless Podman SurrealDB test helper.
 - Fluxheim proxy notes and Wolfi reverse-proxy smoke fixture.
 
@@ -35,6 +36,7 @@ Done when:
 - `scripts/checks.sh` passes.
 - Native Linux, Windows, and macOS Rust tests pass in CI.
 - FreeBSD target compile check passes in CI.
+- Local validation release binary build produces a package and SHA256 values.
 - `cargo deny check` and `cargo audit` are runnable in CI.
 - `scripts/smoke_local.sh` passes.
 - Fluxheim Wolfi can proxy `Host: mythenheim.eu` to Mythenheim `/healthz`.

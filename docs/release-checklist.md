@@ -10,6 +10,8 @@ Every release must have a clear finish line.
 - `cargo audit` passes or documented advisories are explicitly accepted.
 - Binary portability CI passes for Linux, Windows, macOS, and the FreeBSD
   target check.
+- Native release binary artifacts are built with `scripts/build_release_binary.py`
+  or explicitly marked not applicable for the release.
 - Version plan entry exists.
 - Release notes describe stable, beta, and known-gap behavior truthfully.
 - Security-sensitive changes include tests.

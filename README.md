@@ -109,6 +109,12 @@ cargo run -- --check-migrations
 cargo run -- --print-migrations
 ```
 
+Build a local validation release binary from the current checkout:
+
+```sh
+python3 scripts/build_release_binary.py linux --repo . --ref HEAD --allow-untagged
+```
+
 Exercise the preview auth API while the local service is running:
 
 ```sh
@@ -142,6 +148,7 @@ and `dev.mythenheim.eu` through the proxy.
 - [Authentication and session plan](docs/auth-session-plan.md)
 - [Forum core preview](docs/forum-core-preview.md)
 - [Platform support](docs/platform-support.md)
+- [Release binary builds](docs/release-binaries.md)
 - [Rootless SurrealDB testing](docs/surrealdb-test-podman.md)
 - [Fluxheim proxy deployment](docs/fluxheim-proxy.md)
 - [Observability plan](docs/observability.md)

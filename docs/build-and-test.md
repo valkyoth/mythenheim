@@ -13,6 +13,7 @@ The first gate runs:
 - `cargo fmt --all --check`
 - release metadata validation
 - Markdown link validation
+- release binary helper syntax validation without bytecode output
 - migration validation
 - `cargo clippy --all-targets -- -D warnings`
 - `cargo test`
@@ -52,6 +53,24 @@ cargo check --locked --target x86_64-unknown-freebsd --all-targets
 The shell smoke scripts and Podman checks are Linux-oriented. They protect the
 container/proxy deployment path but are not required for the binary to start on
 Windows, macOS, or BSD.
+
+## Release Binary Packaging
+
+Native release binaries are built with:
+
+```sh
+python3 scripts/build_release_binary.py linux --ref v0.12.0
+```
+
+For local validation against the current checkout:
+
+```sh
+python3 scripts/build_release_binary.py linux --repo . --ref HEAD --allow-untagged
+```
+
+The script packages the binary with `LICENSE`, `NOTICE`, and `README.md`, then
+prints SHA256 values. See [release binary builds](release-binaries.md) for the
+full Linux, BSD, Windows, and macOS process.
 
 ## SurrealDB Migration Smoke
 

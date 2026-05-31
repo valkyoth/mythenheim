@@ -38,6 +38,12 @@ The FreeBSD job is a compile check rather than a native runtime test. Before
 declaring a release as fully verified on BSD, run the direct binary smoke on a
 real BSD host or a BSD VM and record the result in release notes.
 
+Native release artifacts should be produced with
+`scripts/build_release_binary.py` on the target operating system. GitHub Actions
+can produce Linux, Windows, and macOS artifacts through the manual release
+binary workflow. BSD artifacts require a BSD host or VM until the project has a
+native BSD release runner.
+
 ## Linux-Only Tooling
 
 These project areas are intentionally Linux-oriented:
