@@ -22,8 +22,9 @@ use mythenheim::{
         TopicDetail,
     },
     moderation::{
-        ApprovalItem, AuditAction, AuditEvent, ModerationError, ModerationService, QueueStatus,
-        Report, UserModerationState, Warning,
+        ApprovalItem, AuditAction, AuditEvent, MacroExecution, ModerationError,
+        ModerationMacroAction, ModerationService, QueueStatus, Report, UserModerationState,
+        Warning,
     },
     permissions::{
         ActorPermissions, Capability, PermissionContext, PermissionService, Role, TrustLevel,
@@ -122,6 +123,38 @@ struct SetShadowbanRequest {
 #[derive(Debug, Deserialize)]
 struct ResolveQueueItemRequest {
     resolution: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExecuteModerationMacroRequest {
+    actions: Vec<ModerationMacroActionRequest>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ModerationMacroActionRequest {
+    ResolveReport {
+        report_id: String,
+        resolution: String,
+    },
+    ResolveApproval {
+        approval_id: String,
+        resolution: String,
+    },
+    IssueWarning {
+        target_user_id: String,
+        target_id: Option<String>,
+        reason: String,
+        points: u32,
+    },
+    ExpireWarning {
+        warning_id: String,
+        reason: String,
+    },
+    SetShadowban {
+        target_user_id: String,
+        shadowbanned: bool,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -271,6 +304,12 @@ struct AuditEventResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct MacroExecutionResponse {
+    action_count: usize,
+    audit_event_count: usize,
+}
+
+#[derive(Debug, Serialize)]
 struct ErrorResponse {
     error: String,
 }
@@ -379,6 +418,7 @@ fn app_with_state(state: AppState, max_request_body_bytes: usize) -> Router {
             "/api/v1/moderation/warnings/{warning_id}/expire",
             post(expire_warning),
         )
+        .route("/api/v1/moderation/macros/execute", post(execute_macro))
         .route("/api/v1/moderation/audit", get(list_audit_events))
         .route(
             "/api/v1/moderation/users/{user_id}/shadowban",
@@ -894,6 +934,33 @@ async fn set_shadowban(
     }
 }
 
+async fn execute_macro(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<ExecuteModerationMacroRequest>,
+) -> Response {
+    let Some(user) = authenticated_user(&state, &headers) else {
+        return auth_error_response(AuthError::InvalidSession);
+    };
+    if !has_capability(&state, &user, "moderation.macro.execute", None, None) {
+        return forum_error_response(ForumError::Forbidden);
+    }
+    let actions = payload
+        .actions
+        .into_iter()
+        .map(ModerationMacroAction::from)
+        .collect::<Vec<_>>();
+
+    match state.moderation.execute_macro(&user.id, &actions) {
+        Ok(execution) => (
+            StatusCode::CREATED,
+            Json(MacroExecutionResponse::from(execution)),
+        )
+            .into_response(),
+        Err(err) => moderation_error_response(err),
+    }
+}
+
 async fn list_audit_events(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let Some(user) = authenticated_user(&state, &headers) else {
         return auth_error_response(AuthError::InvalidSession);
@@ -1194,6 +1261,57 @@ impl From<AuditEvent> for AuditEventResponse {
             previous_state: event.previous_state.map(UserModerationStateResponse::from),
             new_state: event.new_state.map(UserModerationStateResponse::from),
             detail: event.detail,
+        }
+    }
+}
+
+impl From<MacroExecution> for MacroExecutionResponse {
+    fn from(execution: MacroExecution) -> Self {
+        Self {
+            action_count: execution.action_count,
+            audit_event_count: execution.audit_event_count,
+        }
+    }
+}
+
+impl From<ModerationMacroActionRequest> for ModerationMacroAction {
+    fn from(action: ModerationMacroActionRequest) -> Self {
+        match action {
+            ModerationMacroActionRequest::ResolveReport {
+                report_id,
+                resolution,
+            } => Self::ResolveReport {
+                report_id,
+                resolution,
+            },
+            ModerationMacroActionRequest::ResolveApproval {
+                approval_id,
+                resolution,
+            } => Self::ResolveApproval {
+                approval_id,
+                resolution,
+            },
+            ModerationMacroActionRequest::IssueWarning {
+                target_user_id,
+                target_id,
+                reason,
+                points,
+            } => Self::IssueWarning {
+                target_user_id,
+                target_id,
+                reason,
+                points,
+            },
+            ModerationMacroActionRequest::ExpireWarning { warning_id, reason } => {
+                Self::ExpireWarning { warning_id, reason }
+            }
+            ModerationMacroActionRequest::SetShadowban {
+                target_user_id,
+                shadowbanned,
+            } => Self::SetShadowban {
+                target_user_id,
+                shadowbanned,
+            },
         }
     }
 }
@@ -2261,6 +2379,200 @@ mod tests {
         assert_eq!(audit["events"][1]["new_state"]["banned"], false);
     }
 
+    #[tokio::test]
+    async fn staff_can_execute_transactional_moderation_macro() {
+        let moderation = ModerationService::new_in_memory();
+        moderation
+            .report("user:reporter", "post:1", "spam")
+            .unwrap();
+        moderation
+            .queue_approval("system:filters", "user:target", "post:2", "low trust link")
+            .unwrap();
+        let app = app_with_state(
+            AppState {
+                auth: AuthService::new_in_memory(),
+                forum: ForumService::new_in_memory(),
+                moderation,
+                permissions: staff_permission_service(),
+                secure_cookies: true,
+            },
+            1_048_576,
+        );
+        let cookie = register_and_login(&app).await;
+
+        let macro_response = app
+            .clone()
+            .oneshot(json_request_with_cookie(
+                "/api/v1/moderation/macros/execute",
+                &cookie,
+                json!({
+                    "actions": [
+                        {
+                            "type": "resolve_report",
+                            "report_id": "report:1",
+                            "resolution": "deleted duplicate"
+                        },
+                        {
+                            "type": "resolve_approval",
+                            "approval_id": "approval:1",
+                            "resolution": "approved"
+                        },
+                        {
+                            "type": "issue_warning",
+                            "target_user_id": "user:target",
+                            "target_id": "post:2",
+                            "reason": "posted spam",
+                            "points": 5
+                        },
+                        {
+                            "type": "set_shadowban",
+                            "target_user_id": "user:target",
+                            "shadowbanned": true
+                        }
+                    ]
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(macro_response.status(), StatusCode::CREATED);
+        let macro_response = body_json(macro_response).await;
+        assert_eq!(macro_response["action_count"], 4);
+        assert_eq!(macro_response["audit_event_count"], 4);
+
+        let open_reports = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/moderation/reports")
+                    .header(COOKIE, cookie.as_str())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(open_reports.status(), StatusCode::OK);
+        assert!(
+            body_json(open_reports).await["reports"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+
+        let audit = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/moderation/audit")
+                    .header(COOKIE, cookie.as_str())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(audit.status(), StatusCode::OK);
+        let audit = body_json(audit).await;
+        assert_eq!(audit["events"].as_array().unwrap().len(), 6);
+        assert_eq!(audit["events"][2]["action"], "report.resolved");
+        assert_eq!(audit["events"][5]["action"], "user.shadowban.set");
+    }
+
+    #[tokio::test]
+    async fn moderation_macro_api_rolls_back_on_failure() {
+        let moderation = ModerationService::new_in_memory();
+        moderation
+            .report("user:reporter", "post:1", "spam")
+            .unwrap();
+        let app = app_with_state(
+            AppState {
+                auth: AuthService::new_in_memory(),
+                forum: ForumService::new_in_memory(),
+                moderation,
+                permissions: staff_permission_service(),
+                secure_cookies: true,
+            },
+            1_048_576,
+        );
+        let cookie = register_and_login(&app).await;
+
+        let macro_response = app
+            .clone()
+            .oneshot(json_request_with_cookie(
+                "/api/v1/moderation/macros/execute",
+                &cookie,
+                json!({
+                    "actions": [
+                        {
+                            "type": "resolve_report",
+                            "report_id": "report:1",
+                            "resolution": "would resolve"
+                        },
+                        {
+                            "type": "issue_warning",
+                            "target_user_id": "user:target",
+                            "target_id": null,
+                            "reason": "invalid",
+                            "points": 0
+                        }
+                    ]
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(macro_response.status(), StatusCode::BAD_REQUEST);
+
+        let open_reports = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/moderation/reports")
+                    .header(COOKIE, cookie.as_str())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            body_json(open_reports).await["reports"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let audit = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/moderation/audit")
+                    .header(COOKIE, cookie.as_str())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            body_json(audit).await["events"].as_array().unwrap().len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn moderation_macro_api_requires_capability() {
+        let app = app();
+        let cookie = register_and_login(&app).await;
+
+        let macro_response = app
+            .oneshot(json_request_with_cookie(
+                "/api/v1/moderation/macros/execute",
+                &cookie,
+                json!({
+                    "actions": []
+                }),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(macro_response.status(), StatusCode::FORBIDDEN);
+    }
+
     async fn register_and_login(app: &Router) -> String {
         let register_response = app
             .clone()
@@ -2345,6 +2657,7 @@ mod tests {
                 Capability::parse_static("post.delete.own"),
                 Capability::parse_static("moderation.queue.read"),
                 Capability::parse_static("moderation.queue.write"),
+                Capability::parse_static("moderation.macro.execute"),
                 Capability::parse_static("user.warn"),
                 Capability::parse_static("user.shadowban"),
                 Capability::parse_static("audit.read"),

@@ -167,7 +167,7 @@ Current preview:
   staff actions.
 - Staff-facing moderation routes require explicit capabilities such as
   `moderation.queue.read`, `moderation.queue.write`, `user.warn`,
-  `user.shadowban`, and `audit.read`.
+  `user.shadowban`, `moderation.macro.execute`, and `audit.read`.
 
 Done when:
 

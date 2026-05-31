@@ -26,14 +26,16 @@ APIs.
 - `POST /api/v1/moderation/approvals/{approval_id}/resolve`
 - `POST /api/v1/moderation/warnings`
 - `POST /api/v1/moderation/warnings/{warning_id}/expire`
+- `POST /api/v1/moderation/macros/execute`
 - `POST /api/v1/moderation/users/{user_id}/shadowban`
 - `GET /api/v1/moderation/audit`
 
 Reporting a post requires an authenticated user and the post must be visible to
 that user. Queue reads require `moderation.queue.read`, queue resolution
-requires `moderation.queue.write`, warning issuance and expiration require
-`user.warn`, shadowban changes require `user.shadowban`, and audit reads
-require `audit.read`.
+requires `moderation.queue.write`, moderation macro execution requires
+`moderation.macro.execute`, warning issuance and expiration require `user.warn`,
+shadowban changes require `user.shadowban`, and audit reads require
+`audit.read`.
 
 ## Current Rules
 
@@ -50,14 +52,14 @@ require `audit.read`.
 - Audit events are append-only in the preview service API.
 - Resolving a report or approval item removes it from the open queue and writes
   a resolution audit event.
-- Moderation macros execute transactionally in the preview service: if any
-  action fails, no queue, warning, user-state, or audit changes from that macro
-  are committed.
+- Moderation macros execute transactionally in the preview service and API: if
+  any action fails, no queue, warning, user-state, or audit changes from that
+  macro are committed.
 - Staff-facing preview routes are capability-gated before they call the
   moderation service.
 
 ## Current Limits
 
 The service is still in-memory. Persistent queues, staff dashboard routes,
-stored macro definitions, staff macro execution routes, and delayed moderation
-jobs remain follow-up `0.15.0` work.
+stored macro definitions and delayed moderation jobs remain follow-up `0.15.0`
+work.
