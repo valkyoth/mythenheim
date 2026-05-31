@@ -38,21 +38,18 @@ creation.
 
 ## Binary Portability
 
-Mythenheim targets Linux, BSD, Windows, and macOS for direct compiled-binary
-deployments. CI runs native Rust tests on Linux, Windows, and macOS, plus a
-FreeBSD target compile check from Linux.
+Mythenheim targets Linux, macOS, and Windows for direct compiled-binary
+deployments. CI runs native Rust tests on all three.
 
 Local target checks can be run with:
 
 ```sh
 cargo test --locked
-rustup target add x86_64-unknown-freebsd
-cargo check --locked --target x86_64-unknown-freebsd --all-targets
 ```
 
 The shell smoke scripts and Podman checks are Linux-oriented. They protect the
 container/proxy deployment path but are not required for the binary to start on
-Windows, macOS, or BSD.
+Windows or macOS.
 
 ## Release Binary Packaging
 
@@ -70,7 +67,7 @@ python3 scripts/build_release_binary.py linux --repo . --ref HEAD --allow-untagg
 
 The script packages the binary with `LICENSE`, `NOTICE`, and `README.md`, then
 prints SHA256 values. See [release binary builds](release-binaries.md) for the
-full Linux, BSD, Windows, and macOS process.
+full Linux, macOS, and Windows process.
 
 ## SurrealDB Migration Smoke
 

@@ -8,8 +8,7 @@ Every release must have a clear finish line.
 - `scripts/smoke_local.sh` passes.
 - `cargo deny check` passes or documented advisories are explicitly accepted.
 - `cargo audit` passes or documented advisories are explicitly accepted.
-- Binary portability CI passes for Linux, Windows, macOS, and the FreeBSD
-  target check.
+- Binary portability CI passes for Linux, Windows, and macOS.
 - Native release binary artifacts are built with `scripts/build_release_binary.py`
   or explicitly marked not applicable for the release.
 - Version plan entry exists.
@@ -22,7 +21,7 @@ Every release must have a clear finish line.
 
 - Rootless Podman SurrealDB integration tests pass on random ports.
 - Direct compiled binary smoke test passes.
-- Linux, Windows, macOS, and BSD direct-binary support is either verified or
+- Linux, Windows, and macOS direct-binary support is either verified or
   accurately documented with known gaps.
 - Container smoke test passes as a non-root user.
 - Fluxheim Wolfi proxy smoke passes for `mythenheim.eu` and `dev.mythenheim.eu`.

@@ -1,18 +1,19 @@
 # Platform Support
 
-Mythenheim intends to support the compiled application binary on Linux, BSD,
-Windows, and macOS. The container image remains Linux-only by design, but the
-forum server itself should avoid Linux-specific runtime assumptions unless a
-feature is explicitly documented as container-only or development-only.
+Mythenheim supports the compiled application binary on Linux, macOS, and
+Windows. The container image remains Linux-only by design, but the forum server
+itself should avoid Linux-specific runtime assumptions unless a feature is
+explicitly documented as container-only or development-only. BSD is a
+best-effort source portability goal, not a release-blocking target.
 
 ## Target Policy
 
 - Linux is the primary production and container target.
-- BSD is a supported binary target. CI checks the FreeBSD Rust target because
-  GitHub-hosted runners do not provide native BSD jobs.
 - Windows is a supported binary target for direct compiled-binary deployments.
 - macOS is a supported binary target for direct compiled-binary deployments and
   local development.
+- BSD is best-effort. Avoid unnecessary breakage, but do not block releases on
+  BSD checks unless a future release explicitly promotes it.
 
 Portable binary code should use Rust standard-library abstractions such as
 `PathBuf`, `SocketAddr`, and Tokio networking instead of OS-specific APIs.
@@ -30,19 +31,12 @@ The binary portability CI job runs:
 
 - native `cargo test --locked` on Linux;
 - native `cargo test --locked` on Windows;
-- native `cargo test --locked` on macOS;
-- `cargo check --locked --target x86_64-unknown-freebsd --all-targets` on
-  Linux for FreeBSD compile coverage.
-
-The FreeBSD job is a compile check rather than a native runtime test. Before
-declaring a release as fully verified on BSD, run the direct binary smoke on a
-real BSD host or a BSD VM and record the result in release notes.
+- native `cargo test --locked` on macOS.
 
 Native release artifacts should be produced with
 `scripts/build_release_binary.py` on the target operating system. GitHub Actions
 can produce Linux, Windows, and macOS artifacts through the manual release
-binary workflow. BSD artifacts require a BSD host or VM until the project has a
-native BSD release runner.
+binary workflow.
 
 ## Linux-Only Tooling
 
@@ -55,4 +49,4 @@ These project areas are intentionally Linux-oriented:
 
 Those checks remain required for Linux/container release confidence, but they
 must not become prerequisites for running the Mythenheim binary on Windows,
-macOS, or BSD.
+or macOS.

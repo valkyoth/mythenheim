@@ -86,10 +86,6 @@ jobs:
             os: macos-latest
             rust-target: ""
             command: cargo test --locked
-          - name: FreeBSD target
-            os: ubuntu-latest
-            rust-target: x86_64-unknown-freebsd
-            command: cargo check --locked --target x86_64-unknown-freebsd --all-targets
 
     steps:
       - name: Checkout repository

@@ -12,12 +12,11 @@ SHA256 values for release notes.
 | --- | --- | --- | --- |
 | `linux` | Linux | native `x86_64`, `aarch64`, ARM where Rust supports the host | `.tar.gz` |
 | `macos` | macOS | native Intel and Apple Silicon | `.tar.gz` |
-| `bsd` | FreeBSD, OpenBSD, NetBSD, or DragonFly BSD | native `x86_64`, `aarch64`, ARM where Rust supports the host | `.tar.gz` |
 | `windows` | Windows | native `x86_64`, `aarch64`, ARM where Rust supports the host | `.zip` |
 
 The script does native builds by default. Do not use it to imply that a Linux
-host can produce official macOS, Windows, or BSD artifacts. Run it on each
-target operating system, then copy the SHA256 lines into the release notes.
+host can produce official macOS or Windows artifacts. Run it on each target
+operating system, then copy the SHA256 lines into the release notes.
 
 Native ARM hosts work without special flags. The architecture is included in
 the artifact name. For explicit Rust target triples, pass `--target`, for
@@ -37,12 +36,11 @@ mythenheim-0.12.0-linux-x86_64.tar.gz
 mythenheim-0.12.0-macos-x86_64.tar.gz
 mythenheim-0.12.0-windows11-x86_64.zip
 mythenheim-0.12.0-windowsserver2026-x86_64.zip
-mythenheim-0.12.0-freebsd-x86_64.tar.gz
 ```
 
 Use `--os-label` when an artifact should name a specific supported operating
 system variant. Use lowercase labels such as `windows11`,
-`windowsserver2026`, or `freebsd`.
+or `windowsserver2026`.
 
 ## Examples
 
@@ -68,12 +66,6 @@ python3 scripts/build_release_binary.py macos --ref v0.12.0 --install-prereqs
 Apple Silicon macOS can run the same command natively. An explicit target such
 as `aarch64-apple-darwin` is only needed when the build host is configured for
 that cross-target.
-
-BSD:
-
-```sh
-python3 scripts/build_release_binary.py bsd --ref v0.12.0 --os-label freebsd --install-prereqs
-```
 
 Windows:
 

@@ -20,7 +20,7 @@ from pathlib import Path
 
 DEFAULT_REPO = "https://github.com/valkyoth/mythenheim.git"
 PACKAGE_NAME = "mythenheim"
-SUPPORTED_PLATFORMS = ("linux", "macos", "windows", "bsd")
+SUPPORTED_PLATFORMS = ("linux", "macos", "windows")
 
 
 def main() -> int:
@@ -107,7 +107,7 @@ def parse_args() -> argparse.Namespace:
         "--os-label",
         help=(
             "Artifact OS label. Defaults to the platform argument. Useful for "
-            "variants such as windows11, windowsserver2026, or freebsd."
+            "variants such as windows11 or windowsserver2026."
         ),
     )
     parser.add_argument(

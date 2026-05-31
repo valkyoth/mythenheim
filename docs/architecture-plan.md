@@ -2,9 +2,9 @@
 
 Mythenheim is an API-first forum application with a Rust core, SurrealDB
 document/graph storage, and optional server-rendered or external frontends. The
-compiled binary is intended to run directly on Linux, BSD, Windows, and macOS.
-Linux is also the container target for rootless Podman deployments behind
-Fluxheim.
+compiled binary is intended to run directly on Linux, macOS, and Windows. Linux
+is also the container target for rootless Podman deployments behind Fluxheim.
+BSD remains a best-effort source portability goal.
 
 ## Core Components
 
@@ -23,10 +23,11 @@ Fluxheim.
 
 ## Platform Boundary
 
-Application code should remain portable across Linux, BSD, Windows, and macOS.
+Application code should remain portable across Linux, macOS, and Windows.
 Linux-only assumptions belong in container images, rootless Podman scripts, or
 clearly documented smoke-test helpers, not in the core binary. New runtime code
-that needs OS-specific APIs must add matching target checks or tests.
+that needs OS-specific APIs must add matching target checks or tests. BSD
+compatibility should not be broken casually, but it is not a release gate.
 
 ## Database Shape
 
