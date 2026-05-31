@@ -1,6 +1,6 @@
 use crate::content::render_markdown_safe;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fmt,
     sync::{Arc, Mutex},
 };
@@ -281,6 +281,25 @@ impl ForumService {
         page_size: usize,
         can_read_private: bool,
     ) -> Result<Vec<Topic>, ForumError> {
+        self.list_topics_visible(
+            category_id,
+            page,
+            page_size,
+            can_read_private,
+            None,
+            &HashSet::new(),
+        )
+    }
+
+    pub fn list_topics_visible(
+        &self,
+        category_id: &str,
+        page: usize,
+        page_size: usize,
+        can_read_private: bool,
+        viewer_id: Option<&str>,
+        hidden_author_ids: &HashSet<String>,
+    ) -> Result<Vec<Topic>, ForumError> {
         let state = self.inner.lock().map_err(|_| ForumError::StorePoisoned)?;
         if !state.categories.contains_key(category_id) {
             return Err(ForumError::CategoryNotFound);
@@ -297,6 +316,7 @@ impl ForumService {
             .flatten()
             .filter_map(|topic_id| state.topics.get(topic_id))
             .filter(|topic| !topic.deleted)
+            .filter(|topic| author_is_visible(viewer_id, &topic.author_id, hidden_author_ids))
             .skip(start)
             .take(page_size)
             .map(StoredTopic::public)
@@ -309,12 +329,25 @@ impl ForumService {
         topic_id: &str,
         can_read_private: bool,
     ) -> Result<TopicDetail, ForumError> {
+        self.get_topic_visible(topic_id, can_read_private, None, &HashSet::new())
+    }
+
+    pub fn get_topic_visible(
+        &self,
+        topic_id: &str,
+        can_read_private: bool,
+        viewer_id: Option<&str>,
+        hidden_author_ids: &HashSet<String>,
+    ) -> Result<TopicDetail, ForumError> {
         let state = self.inner.lock().map_err(|_| ForumError::StorePoisoned)?;
         let topic = state
             .topics
             .get(topic_id)
             .filter(|topic| !topic.deleted)
             .ok_or(ForumError::TopicNotFound)?;
+        if !author_is_visible(viewer_id, &topic.author_id, hidden_author_ids) {
+            return Err(ForumError::TopicNotFound);
+        }
         if !can_read_private && category_is_private(&state, &topic.category_id) {
             return Err(ForumError::TopicNotFound);
         }
@@ -325,6 +358,7 @@ impl ForumService {
             .flatten()
             .filter_map(|post_id| state.posts.get(post_id))
             .filter(|post| !post.deleted)
+            .filter(|post| author_is_visible(viewer_id, &post.author_id, hidden_author_ids))
             .map(StoredPost::public)
             .collect();
 
@@ -335,17 +369,33 @@ impl ForumService {
     }
 
     pub fn get_post(&self, post_id: &str, can_read_private: bool) -> Result<Post, ForumError> {
+        self.get_post_visible(post_id, can_read_private, None, &HashSet::new())
+    }
+
+    pub fn get_post_visible(
+        &self,
+        post_id: &str,
+        can_read_private: bool,
+        viewer_id: Option<&str>,
+        hidden_author_ids: &HashSet<String>,
+    ) -> Result<Post, ForumError> {
         let state = self.inner.lock().map_err(|_| ForumError::StorePoisoned)?;
         let post = state
             .posts
             .get(post_id)
             .filter(|post| !post.deleted)
             .ok_or(ForumError::PostNotFound)?;
+        if !author_is_visible(viewer_id, &post.author_id, hidden_author_ids) {
+            return Err(ForumError::PostNotFound);
+        }
         let topic = state
             .topics
             .get(&post.topic_id)
             .filter(|topic| !topic.deleted)
             .ok_or(ForumError::TopicNotFound)?;
+        if !author_is_visible(viewer_id, &topic.author_id, hidden_author_ids) {
+            return Err(ForumError::PostNotFound);
+        }
         if !can_read_private && category_is_private(&state, &topic.category_id) {
             return Err(ForumError::PostNotFound);
         }
@@ -665,6 +715,14 @@ fn category_is_private(state: &ForumState, category_id: &str) -> bool {
     false
 }
 
+fn author_is_visible(
+    viewer_id: Option<&str>,
+    author_id: &str,
+    hidden_author_ids: &HashSet<String>,
+) -> bool {
+    !hidden_author_ids.contains(author_id) || viewer_id == Some(author_id)
+}
+
 fn build_category_tree(parent_id: Option<&str>, categories: &[Category]) -> Vec<CategoryNode> {
     categories
         .iter()
@@ -917,6 +975,50 @@ mod tests {
                 .list_topics(&category.id, 1, 25, false)
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn shadowban_visibility_hides_content_from_other_viewers() {
+        let forum = ForumService::new_in_memory();
+        let category = forum.create_category("General", None, None, false).unwrap();
+        let topic = forum
+            .create_topic(&category.id, AUTHOR, "Visible To Self", "first")
+            .unwrap();
+        forum
+            .reply(&topic.topic.id, "user:other", "ordinary reply")
+            .unwrap();
+
+        let hidden_authors = HashSet::from([AUTHOR.to_owned()]);
+
+        assert!(matches!(
+            forum.get_topic_visible(&topic.topic.id, false, Some("user:other"), &hidden_authors),
+            Err(ForumError::TopicNotFound)
+        ));
+        assert!(
+            forum
+                .list_topics_visible(
+                    &category.id,
+                    1,
+                    25,
+                    false,
+                    Some("user:other"),
+                    &hidden_authors,
+                )
+                .unwrap()
+                .is_empty()
+        );
+
+        let own_view = forum
+            .get_topic_visible(&topic.topic.id, false, Some(AUTHOR), &hidden_authors)
+            .unwrap();
+        assert_eq!(own_view.posts.len(), 2);
+        assert_eq!(
+            forum
+                .get_post_visible(&topic.posts[0].id, false, Some(AUTHOR), &hidden_authors)
+                .unwrap()
+                .id,
+            topic.posts[0].id
         );
     }
 }

@@ -149,6 +149,18 @@ Scope:
 - Mute, ban, and shadowban state.
 - Append-only audit events for every staff action.
 
+Current preview:
+
+- In-memory moderation service with report and approval queues.
+- Warning records with active warning points.
+- Automatic mute and ban state at configured warning point thresholds.
+- Shadowban state and forum read filtering that hides shadowbanned authors
+  from other users while preserving the author's own view.
+- Append-only audit events for report creation, approval queuing, warning
+  issuance, and shadowban changes.
+- Audit events capture previous and new user moderation state for stateful
+  staff actions.
+
 Done when:
 
 - Shadowbanned users see their own posts while others do not.

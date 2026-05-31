@@ -21,12 +21,13 @@ use mythenheim::{
         Category, CategoryNode, DEFAULT_PAGE_SIZE, ForumError, ForumService, Post, Topic,
         TopicDetail,
     },
+    moderation::ModerationService,
     permissions::{
         ActorPermissions, Capability, PermissionContext, PermissionService, Role, TrustLevel,
     },
 };
 use serde::{Deserialize, Serialize};
-use std::{net::SocketAddr, path::PathBuf};
+use std::{collections::HashSet, net::SocketAddr, path::PathBuf};
 use tower_http::trace::TraceLayer;
 
 #[derive(Debug, Parser)]
@@ -55,6 +56,7 @@ struct HealthResponse {
 struct AppState {
     auth: AuthService,
     forum: ForumService,
+    moderation: ModerationService,
     permissions: PermissionService,
     secure_cookies: bool,
 }
@@ -216,6 +218,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             AppState {
                 auth: AuthService::new_in_memory(),
                 forum: ForumService::new_in_memory(),
+                moderation: ModerationService::new_in_memory(),
                 permissions: preview_permission_service(),
                 secure_cookies,
             },
@@ -232,6 +235,7 @@ fn app() -> Router {
         AppState {
             auth: AuthService::new_in_memory(),
             forum: ForumService::new_in_memory(),
+            moderation: ModerationService::new_in_memory(),
             permissions: preview_permission_service(),
             secure_cookies: true,
         },
@@ -331,7 +335,8 @@ async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
 }
 
 async fn list_categories(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let can_read_private = can_read_private_categories(&state, &headers);
+    let viewer = authenticated_user(&state, &headers);
+    let can_read_private = can_read_private_categories_for(&state, viewer.as_ref());
     match state.forum.list_categories_for(can_read_private) {
         Ok(categories) => Json(CategoriesResponse {
             categories: categories.into_iter().map(CategoryResponse::from).collect(),
@@ -342,7 +347,8 @@ async fn list_categories(State(state): State<AppState>, headers: HeaderMap) -> R
 }
 
 async fn category_tree(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let can_read_private = can_read_private_categories(&state, &headers);
+    let viewer = authenticated_user(&state, &headers);
+    let can_read_private = can_read_private_categories_for(&state, viewer.as_ref());
     match state.forum.category_tree_for(can_read_private) {
         Ok(categories) => Json(CategoryTreeResponse {
             categories: categories
@@ -386,12 +392,16 @@ async fn list_topics(
     axum::extract::Path(category_id): axum::extract::Path<String>,
     Query(query): Query<ListTopicsQuery>,
 ) -> Response {
-    let can_read_private = can_read_private_categories(&state, &headers);
-    match state.forum.list_topics(
+    let viewer = authenticated_user(&state, &headers);
+    let can_read_private = can_read_private_categories_for(&state, viewer.as_ref());
+    let hidden_author_ids = hidden_author_ids(&state);
+    match state.forum.list_topics_visible(
         &category_id,
         query.page.unwrap_or(1),
         query.page_size.unwrap_or(DEFAULT_PAGE_SIZE),
         can_read_private,
+        viewer.as_ref().map(|user| user.id.as_str()),
+        &hidden_author_ids,
     ) {
         Ok(topics) => Json(TopicsResponse {
             topics: topics.into_iter().map(TopicResponse::from).collect(),
@@ -428,8 +438,15 @@ async fn get_topic(
     headers: HeaderMap,
     axum::extract::Path(topic_id): axum::extract::Path<String>,
 ) -> Response {
-    let can_read_private = can_read_private_categories(&state, &headers);
-    match state.forum.get_topic(&topic_id, can_read_private) {
+    let viewer = authenticated_user(&state, &headers);
+    let can_read_private = can_read_private_categories_for(&state, viewer.as_ref());
+    let hidden_author_ids = hidden_author_ids(&state);
+    match state.forum.get_topic_visible(
+        &topic_id,
+        can_read_private,
+        viewer.as_ref().map(|user| user.id.as_str()),
+        &hidden_author_ids,
+    ) {
         Ok(topic) => Json(TopicDetailResponse::from(topic)).into_response(),
         Err(err) => forum_error_response(err),
     }
@@ -468,8 +485,15 @@ async fn get_post(
     headers: HeaderMap,
     axum::extract::Path(post_id): axum::extract::Path<String>,
 ) -> Response {
-    let can_read_private = can_read_private_categories(&state, &headers);
-    match state.forum.get_post(&post_id, can_read_private) {
+    let viewer = authenticated_user(&state, &headers);
+    let can_read_private = can_read_private_categories_for(&state, viewer.as_ref());
+    let hidden_author_ids = hidden_author_ids(&state);
+    match state.forum.get_post_visible(
+        &post_id,
+        can_read_private,
+        viewer.as_ref().map(|user| user.id.as_str()),
+        &hidden_author_ids,
+    ) {
         Ok(post) => Json(PostResponse::from(post)).into_response(),
         Err(err) => forum_error_response(err),
     }
@@ -570,9 +594,17 @@ fn authenticated_user(state: &AppState, headers: &HeaderMap) -> Option<PublicUse
     state.auth.authenticate(&session_secret).ok()
 }
 
-fn can_read_private_categories(state: &AppState, headers: &HeaderMap) -> bool {
-    authenticated_user(state, headers)
-        .is_some_and(|user| has_capability(state, &user, "category.read.private", None, None))
+fn can_read_private_categories_for(state: &AppState, user: Option<&PublicUser>) -> bool {
+    user.is_some_and(|user| has_capability(state, user, "category.read.private", None, None))
+}
+
+fn hidden_author_ids(state: &AppState) -> HashSet<String> {
+    state
+        .moderation
+        .shadowbanned_user_ids()
+        .unwrap_or_default()
+        .into_iter()
+        .collect()
 }
 
 fn has_capability(
@@ -796,7 +828,7 @@ mod tests {
                 json!({
                     "username": "Member",
                     "email": "member@example.test",
-                    "password": "correct horse battery staple"
+                    "password": test_password()
                 }),
             ))
             .await
@@ -809,7 +841,7 @@ mod tests {
                 "/api/v1/auth/login",
                 json!({
                     "login": "member",
-                    "password": "correct horse battery staple"
+                    "password": test_password()
                 }),
             ))
             .await
@@ -873,7 +905,7 @@ mod tests {
         let payload = json!({
             "username": "Member",
             "email": "member@example.test",
-            "password": "correct horse battery staple"
+            "password": test_password()
         });
 
         let first = app
@@ -889,7 +921,7 @@ mod tests {
                 json!({
                     "username": "member",
                     "email": "other@example.test",
-                    "password": "correct horse battery staple"
+                    "password": test_password()
                 }),
             ))
             .await
@@ -907,7 +939,7 @@ mod tests {
                 json!({
                     "username": "Member",
                     "email": "member@example.test",
-                    "password": "correct horse battery staple"
+                    "password": test_password()
                 }),
             ))
             .await
@@ -921,7 +953,7 @@ mod tests {
                     "/api/v1/auth/login",
                     json!({
                         "login": "member",
-                        "password": "wrong horse battery staple"
+                        "password": wrong_test_password()
                     }),
                 ))
                 .await
@@ -934,7 +966,7 @@ mod tests {
                 "/api/v1/auth/login",
                 json!({
                     "login": "member",
-                    "password": "correct horse battery staple"
+                    "password": test_password()
                 }),
             ))
             .await
@@ -950,6 +982,7 @@ mod tests {
             AppState {
                 auth: AuthService::new_in_memory(),
                 forum: ForumService::new_in_memory(),
+                moderation: ModerationService::new_in_memory(),
                 permissions: preview_permission_service(),
                 secure_cookies: false,
             },
@@ -960,7 +993,7 @@ mod tests {
             json!({
                 "username": "Member",
                 "email": "member@example.test",
-                "password": "correct horse battery staple"
+                "password": test_password()
             }),
         ))
         .await
@@ -1007,6 +1040,7 @@ mod tests {
             AppState {
                 auth: AuthService::new_in_memory(),
                 forum: ForumService::new_in_memory(),
+                moderation: ModerationService::new_in_memory(),
                 permissions: PermissionService::default(),
                 secure_cookies: true,
             },
@@ -1038,6 +1072,7 @@ mod tests {
             AppState {
                 auth: AuthService::new_in_memory(),
                 forum,
+                moderation: ModerationService::new_in_memory(),
                 permissions: PermissionService::new_in_memory([Role::new(
                     "role:no-private-read",
                     "No Private Read",
@@ -1394,6 +1429,57 @@ mod tests {
         assert_eq!(authenticated_post.status(), StatusCode::OK);
     }
 
+    #[tokio::test]
+    async fn shadowbanned_topic_author_only_sees_own_topic() {
+        let forum = ForumService::new_in_memory();
+        let category = forum.create_category("General", None, None, false).unwrap();
+        let topic = forum
+            .create_topic(&category.id, "user:1", "Shadow Topic", "visible to self")
+            .unwrap();
+        let topic_id = topic.topic.id.clone();
+        let moderation = ModerationService::new_in_memory();
+        moderation
+            .set_shadowbanned("user:mod", "user:1", true)
+            .unwrap();
+        let app = app_with_state(
+            AppState {
+                auth: AuthService::new_in_memory(),
+                forum,
+                moderation,
+                permissions: preview_permission_service(),
+                secure_cookies: true,
+            },
+            1_048_576,
+        );
+
+        let anonymous_topic = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v1/topics/{topic_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(anonymous_topic.status(), StatusCode::NOT_FOUND);
+
+        let cookie = register_and_login(&app).await;
+        let own_topic = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v1/topics/{topic_id}"))
+                    .header(COOKIE, cookie.as_str())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(own_topic.status(), StatusCode::OK);
+        assert_eq!(body_json(own_topic).await["topic"]["id"], topic_id);
+    }
+
     async fn register_and_login(app: &Router) -> String {
         let register_response = app
             .clone()
@@ -1402,7 +1488,7 @@ mod tests {
                 json!({
                     "username": "ForumMember",
                     "email": "forum-member@example.test",
-                    "password": "correct horse battery staple"
+                    "password": test_password()
                 }),
             ))
             .await
@@ -1415,7 +1501,7 @@ mod tests {
                 "/api/v1/auth/login",
                 json!({
                     "login": "ForumMember",
-                    "password": "correct horse battery staple"
+                    "password": test_password()
                 }),
             ))
             .await
@@ -1461,6 +1547,14 @@ mod tests {
             .header(COOKIE, cookie)
             .body(Body::from(payload.to_string()))
             .unwrap()
+    }
+
+    fn test_password() -> String {
+        "a".repeat(32)
+    }
+
+    fn wrong_test_password() -> String {
+        "b".repeat(32)
     }
 
     async fn body_json(response: Response) -> serde_json::Value {

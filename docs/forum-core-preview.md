@@ -37,6 +37,8 @@ capabilities.
 - Deleting a reply soft-deletes that post and decrements `reply_count`.
 - Deleting a topic, or deleting its first post, soft-deletes the topic and its
   posts.
+- Moderation-aware read paths can hide content from shadowbanned authors while
+  leaving it visible to the author.
 - Raw HTML events are dropped before rendering, then generated HTML is passed
   through `ammonia`.
 - Empty titles, empty post content, NUL bytes, and oversized post bodies are
