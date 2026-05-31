@@ -22,9 +22,9 @@ use mythenheim::{
         TopicDetail,
     },
     moderation::{
-        ApprovalItem, AuditAction, AuditEvent, MacroExecution, ModerationError,
-        ModerationMacroAction, ModerationService, QueueStatus, Report, UserModerationState,
-        Warning,
+        ApprovalItem, AuditAction, AuditEvent, JobRunSummary, JobStatus, MacroExecution,
+        ModerationError, ModerationJob, ModerationMacroAction, ModerationService, QueueStatus,
+        Report, UserModerationState, Warning,
     },
     permissions::{
         ActorPermissions, Capability, PermissionContext, PermissionService, Role, TrustLevel,
@@ -128,6 +128,17 @@ struct ResolveQueueItemRequest {
 #[derive(Debug, Deserialize)]
 struct ExecuteModerationMacroRequest {
     actions: Vec<ModerationMacroActionRequest>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ScheduleModerationJobRequest {
+    run_at_tick: u64,
+    actions: Vec<ModerationMacroActionRequest>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RunDueModerationJobsRequest {
+    now_tick: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -310,6 +321,50 @@ struct MacroExecutionResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct ModerationJobResponse {
+    id: String,
+    actor_id: String,
+    run_at_tick: u64,
+    status: &'static str,
+    actions: Vec<ModerationMacroActionResponse>,
+    last_error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ModerationMacroActionResponse {
+    ResolveReport {
+        report_id: String,
+        resolution: String,
+    },
+    ResolveApproval {
+        approval_id: String,
+        resolution: String,
+    },
+    IssueWarning {
+        target_user_id: String,
+        target_id: Option<String>,
+        reason: String,
+        points: u32,
+    },
+    ExpireWarning {
+        warning_id: String,
+        reason: String,
+    },
+    SetShadowban {
+        target_user_id: String,
+        shadowbanned: bool,
+    },
+}
+
+#[derive(Debug, Serialize)]
+struct JobRunSummaryResponse {
+    checked: usize,
+    completed: usize,
+    failed: usize,
+}
+
+#[derive(Debug, Serialize)]
 struct ErrorResponse {
     error: String,
 }
@@ -419,6 +474,9 @@ fn app_with_state(state: AppState, max_request_body_bytes: usize) -> Router {
             post(expire_warning),
         )
         .route("/api/v1/moderation/macros/execute", post(execute_macro))
+        .route("/api/v1/moderation/jobs", post(schedule_job))
+        .route("/api/v1/moderation/jobs/run-due", post(run_due_jobs))
+        .route("/api/v1/moderation/jobs/{job_id}", get(get_job))
         .route("/api/v1/moderation/audit", get(list_audit_events))
         .route(
             "/api/v1/moderation/users/{user_id}/shadowban",
@@ -961,6 +1019,68 @@ async fn execute_macro(
     }
 }
 
+async fn schedule_job(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<ScheduleModerationJobRequest>,
+) -> Response {
+    let Some(user) = authenticated_user(&state, &headers) else {
+        return auth_error_response(AuthError::InvalidSession);
+    };
+    if !has_capability(&state, &user, "moderation.job.write", None, None) {
+        return forum_error_response(ForumError::Forbidden);
+    }
+    let actions = payload
+        .actions
+        .into_iter()
+        .map(ModerationMacroAction::from)
+        .collect::<Vec<_>>();
+
+    match state
+        .moderation
+        .schedule_job(&user.id, payload.run_at_tick, actions)
+    {
+        Ok(job) => (StatusCode::CREATED, Json(ModerationJobResponse::from(job))).into_response(),
+        Err(err) => moderation_error_response(err),
+    }
+}
+
+async fn run_due_jobs(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<RunDueModerationJobsRequest>,
+) -> Response {
+    let Some(user) = authenticated_user(&state, &headers) else {
+        return auth_error_response(AuthError::InvalidSession);
+    };
+    if !has_capability(&state, &user, "moderation.job.write", None, None) {
+        return forum_error_response(ForumError::Forbidden);
+    }
+
+    match state.moderation.run_due_jobs(payload.now_tick) {
+        Ok(summary) => Json(JobRunSummaryResponse::from(summary)).into_response(),
+        Err(err) => moderation_error_response(err),
+    }
+}
+
+async fn get_job(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Path(job_id): axum::extract::Path<String>,
+) -> Response {
+    let Some(user) = authenticated_user(&state, &headers) else {
+        return auth_error_response(AuthError::InvalidSession);
+    };
+    if !has_capability(&state, &user, "moderation.job.read", None, None) {
+        return forum_error_response(ForumError::Forbidden);
+    }
+
+    match state.moderation.job(&job_id) {
+        Ok(job) => Json(ModerationJobResponse::from(job)).into_response(),
+        Err(err) => moderation_error_response(err),
+    }
+}
+
 async fn list_audit_events(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let Some(user) = authenticated_user(&state, &headers) else {
         return auth_error_response(AuthError::InvalidSession);
@@ -1275,6 +1395,75 @@ impl From<MacroExecution> for MacroExecutionResponse {
     }
 }
 
+impl From<ModerationJob> for ModerationJobResponse {
+    fn from(job: ModerationJob) -> Self {
+        Self {
+            id: job.id,
+            actor_id: job.actor_id,
+            run_at_tick: job.run_at_tick,
+            status: job_status_label(job.status),
+            actions: job
+                .actions
+                .into_iter()
+                .map(ModerationMacroActionResponse::from)
+                .collect(),
+            last_error: job.last_error,
+        }
+    }
+}
+
+impl From<ModerationMacroAction> for ModerationMacroActionResponse {
+    fn from(action: ModerationMacroAction) -> Self {
+        match action {
+            ModerationMacroAction::ResolveReport {
+                report_id,
+                resolution,
+            } => Self::ResolveReport {
+                report_id,
+                resolution,
+            },
+            ModerationMacroAction::ResolveApproval {
+                approval_id,
+                resolution,
+            } => Self::ResolveApproval {
+                approval_id,
+                resolution,
+            },
+            ModerationMacroAction::IssueWarning {
+                target_user_id,
+                target_id,
+                reason,
+                points,
+            } => Self::IssueWarning {
+                target_user_id,
+                target_id,
+                reason,
+                points,
+            },
+            ModerationMacroAction::ExpireWarning { warning_id, reason } => {
+                Self::ExpireWarning { warning_id, reason }
+            }
+            ModerationMacroAction::SetShadowban {
+                target_user_id,
+                shadowbanned,
+            } => Self::SetShadowban {
+                target_user_id,
+                shadowbanned,
+            },
+        }
+    }
+}
+
+impl From<JobRunSummary> for JobRunSummaryResponse {
+    fn from(summary: JobRunSummary) -> Self {
+        Self {
+            checked: summary.checked,
+            completed: summary.completed,
+            failed: summary.failed,
+        }
+    }
+}
+
 impl From<ModerationMacroActionRequest> for ModerationMacroAction {
     fn from(action: ModerationMacroActionRequest) -> Self {
         match action {
@@ -1314,6 +1503,14 @@ impl From<ModerationMacroActionRequest> for ModerationMacroAction {
                 shadowbanned,
             },
         }
+    }
+}
+
+fn job_status_label(status: JobStatus) -> &'static str {
+    match status {
+        JobStatus::Pending => "pending",
+        JobStatus::Completed => "completed",
+        JobStatus::Failed => "failed",
     }
 }
 
@@ -2574,6 +2771,161 @@ mod tests {
         assert_eq!(macro_response.status(), StatusCode::FORBIDDEN);
     }
 
+    #[tokio::test]
+    async fn staff_can_schedule_run_and_read_moderation_job() {
+        let moderation = ModerationService::new_in_memory();
+        moderation
+            .report("user:reporter", "post:1", "spam")
+            .unwrap();
+        let app = app_with_state(
+            AppState {
+                auth: AuthService::new_in_memory(),
+                forum: ForumService::new_in_memory(),
+                moderation,
+                permissions: staff_permission_service(),
+                secure_cookies: true,
+            },
+            1_048_576,
+        );
+        let cookie = register_and_login(&app).await;
+
+        let schedule_response = app
+            .clone()
+            .oneshot(json_request_with_cookie(
+                "/api/v1/moderation/jobs",
+                &cookie,
+                json!({
+                    "run_at_tick": 5,
+                    "actions": [
+                        {
+                            "type": "resolve_report",
+                            "report_id": "report:1",
+                            "resolution": "handled by delayed job"
+                        }
+                    ]
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(schedule_response.status(), StatusCode::CREATED);
+        let scheduled = body_json(schedule_response).await;
+        assert_eq!(scheduled["id"], "job:1");
+        assert_eq!(scheduled["status"], "pending");
+        assert_eq!(scheduled["actions"][0]["type"], "resolve_report");
+
+        let early_run = app
+            .clone()
+            .oneshot(json_request_with_cookie(
+                "/api/v1/moderation/jobs/run-due",
+                &cookie,
+                json!({
+                    "now_tick": 4
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(early_run.status(), StatusCode::OK);
+        let early_run = body_json(early_run).await;
+        assert_eq!(early_run["checked"], 0);
+        assert_eq!(early_run["completed"], 0);
+
+        let due_run = app
+            .clone()
+            .oneshot(json_request_with_cookie(
+                "/api/v1/moderation/jobs/run-due",
+                &cookie,
+                json!({
+                    "now_tick": 5
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(due_run.status(), StatusCode::OK);
+        let due_run = body_json(due_run).await;
+        assert_eq!(due_run["checked"], 1);
+        assert_eq!(due_run["completed"], 1);
+        assert_eq!(due_run["failed"], 0);
+
+        let job_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/moderation/jobs/job:1")
+                    .header(COOKIE, cookie.as_str())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(job_response.status(), StatusCode::OK);
+        let job_response = body_json(job_response).await;
+        assert_eq!(job_response["status"], "completed");
+        assert_eq!(job_response["last_error"], serde_json::Value::Null);
+
+        let open_reports = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/moderation/reports")
+                    .header(COOKIE, cookie.as_str())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(open_reports.status(), StatusCode::OK);
+        assert!(
+            body_json(open_reports).await["reports"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn moderation_job_api_requires_capability() {
+        let app = app();
+        let cookie = register_and_login(&app).await;
+
+        let schedule_response = app
+            .clone()
+            .oneshot(json_request_with_cookie(
+                "/api/v1/moderation/jobs",
+                &cookie,
+                json!({
+                    "run_at_tick": 1,
+                    "actions": []
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(schedule_response.status(), StatusCode::FORBIDDEN);
+
+        let run_response = app
+            .clone()
+            .oneshot(json_request_with_cookie(
+                "/api/v1/moderation/jobs/run-due",
+                &cookie,
+                json!({
+                    "now_tick": 1
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(run_response.status(), StatusCode::FORBIDDEN);
+
+        let read_response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/moderation/jobs/job:1")
+                    .header(COOKIE, cookie.as_str())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(read_response.status(), StatusCode::FORBIDDEN);
+    }
+
     async fn register_and_login(app: &Router) -> String {
         let register_response = app
             .clone()
@@ -2659,6 +3011,8 @@ mod tests {
                 Capability::parse_static("moderation.queue.read"),
                 Capability::parse_static("moderation.queue.write"),
                 Capability::parse_static("moderation.macro.execute"),
+                Capability::parse_static("moderation.job.read"),
+                Capability::parse_static("moderation.job.write"),
                 Capability::parse_static("user.warn"),
                 Capability::parse_static("user.shadowban"),
                 Capability::parse_static("audit.read"),

@@ -29,6 +29,9 @@ APIs.
 - `POST /api/v1/moderation/warnings`
 - `POST /api/v1/moderation/warnings/{warning_id}/expire`
 - `POST /api/v1/moderation/macros/execute`
+- `POST /api/v1/moderation/jobs`
+- `POST /api/v1/moderation/jobs/run-due`
+- `GET /api/v1/moderation/jobs/{job_id}`
 - `POST /api/v1/moderation/users/{user_id}/shadowban`
 - `GET /api/v1/moderation/audit`
 
@@ -38,6 +41,8 @@ requires `moderation.queue.write`, moderation macro execution requires
 `moderation.macro.execute`, warning issuance and expiration require `user.warn`,
 shadowban changes require `user.shadowban`, and audit reads require
 `audit.read`.
+Delayed moderation job reads require `moderation.job.read`. Scheduling jobs
+and running due jobs require `moderation.job.write`.
 
 ## Current Rules
 
@@ -65,6 +70,5 @@ shadowban changes require `user.shadowban`, and audit reads require
 
 ## Current Limits
 
-The service is still in-memory. Persistent queues, staff dashboard routes,
-stored macro definitions and delayed moderation job API routes remain follow-up
-`0.15.0` work.
+The service is still in-memory. Persistent queues, staff dashboard routes, and
+stored macro definitions remain follow-up `0.15.0` work.

@@ -161,6 +161,8 @@ Current preview:
 - Transactional moderation macro execution in the preview service.
 - Delayed moderation jobs that execute due macro action lists once and preserve
   state on failed jobs.
+- Preview HTTP routes to schedule delayed moderation jobs, run due jobs, and
+  read job status.
 - Shadowban state and forum read filtering that hides shadowbanned authors
   from other users while preserving the author's own view.
 - Append-only audit events for report creation, approval queuing, warning
@@ -169,7 +171,8 @@ Current preview:
   staff actions.
 - Staff-facing moderation routes require explicit capabilities such as
   `moderation.queue.read`, `moderation.queue.write`, `user.warn`,
-  `user.shadowban`, `moderation.macro.execute`, and `audit.read`.
+  `user.shadowban`, `moderation.macro.execute`, `moderation.job.read`,
+  `moderation.job.write`, and `audit.read`.
 
 Done when:
 
