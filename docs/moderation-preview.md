@@ -23,13 +23,15 @@ APIs.
 - `GET /api/v1/moderation/approvals`
 - `POST /api/v1/moderation/approvals/{approval_id}/resolve`
 - `POST /api/v1/moderation/warnings`
+- `POST /api/v1/moderation/warnings/{warning_id}/expire`
 - `POST /api/v1/moderation/users/{user_id}/shadowban`
 - `GET /api/v1/moderation/audit`
 
 Reporting a post requires an authenticated user and the post must be visible to
 that user. Queue reads require `moderation.queue.read`, queue resolution
-requires `moderation.queue.write`, warnings require `user.warn`, shadowban
-changes require `user.shadowban`, and audit reads require `audit.read`.
+requires `moderation.queue.write`, warning issuance and expiration require
+`user.warn`, shadowban changes require `user.shadowban`, and audit reads
+require `audit.read`.
 
 ## Current Rules
 
@@ -38,6 +40,8 @@ changes require `user.shadowban`, and audit reads require `audit.read`.
 - Warning points are summed from active warnings.
 - Users are automatically muted at `5` active warning points.
 - Users are automatically banned at `10` active warning points.
+- Expiring a warning marks it inactive, recomputes active warning points, and
+  can automatically clear mute/ban state when thresholds are no longer met.
 - Shadowbanned authors can see their own topics and posts.
 - Other authenticated users and anonymous users cannot see content authored by
   shadowbanned users through topic, topic-list, or direct-post reads.

@@ -375,6 +375,10 @@ fn app_with_state(state: AppState, max_request_body_bytes: usize) -> Router {
             post(resolve_approval),
         )
         .route("/api/v1/moderation/warnings", post(issue_warning))
+        .route(
+            "/api/v1/moderation/warnings/{warning_id}/expire",
+            post(expire_warning),
+        )
         .route("/api/v1/moderation/audit", get(list_audit_events))
         .route(
             "/api/v1/moderation/users/{user_id}/shadowban",
@@ -842,6 +846,32 @@ async fn issue_warning(
     }
 }
 
+async fn expire_warning(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Path(warning_id): axum::extract::Path<String>,
+    Json(payload): Json<ResolveQueueItemRequest>,
+) -> Response {
+    let Some(user) = authenticated_user(&state, &headers) else {
+        return auth_error_response(AuthError::InvalidSession);
+    };
+    if !has_capability(&state, &user, "user.warn", None, None) {
+        return forum_error_response(ForumError::Forbidden);
+    }
+
+    match state
+        .moderation
+        .expire_warning(&user.id, &warning_id, &payload.resolution)
+    {
+        Ok((warning, user_state)) => Json(WarningIssuedResponse {
+            warning: WarningResponse::from(warning),
+            user_state: UserModerationStateResponse::from(user_state),
+        })
+        .into_response(),
+        Err(err) => moderation_error_response(err),
+    }
+}
+
 async fn set_shadowban(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1011,10 +1041,11 @@ fn forum_error_response(err: ForumError) -> Response {
 fn moderation_error_response(err: ModerationError) -> Response {
     let status = match &err {
         ModerationError::InvalidReason | ModerationError::InvalidPoints => StatusCode::BAD_REQUEST,
-        ModerationError::ReportNotFound | ModerationError::ApprovalNotFound => {
-            StatusCode::NOT_FOUND
-        }
+        ModerationError::ReportNotFound
+        | ModerationError::ApprovalNotFound
+        | ModerationError::WarningNotFound => StatusCode::NOT_FOUND,
         ModerationError::AlreadyResolved => StatusCode::CONFLICT,
+        ModerationError::WarningInactive => StatusCode::CONFLICT,
         ModerationError::StorePoisoned => StatusCode::INTERNAL_SERVER_ERROR,
     };
 
@@ -1179,6 +1210,7 @@ fn audit_action_label(action: AuditAction) -> &'static str {
         AuditAction::ApprovalQueued => "approval.queued",
         AuditAction::ApprovalResolved => "approval.resolved",
         AuditAction::WarningIssued => "warning.issued",
+        AuditAction::WarningExpired => "warning.expired",
         AuditAction::UserShadowbanSet => "user.shadowban.set",
     }
 }
@@ -2145,6 +2177,86 @@ mod tests {
         assert_eq!(audit["events"][0]["new_state"]["active_warning_points"], 10);
         assert_eq!(audit["events"][1]["action"], "user.shadowban.set");
         assert_eq!(audit["events"][1]["previous_state"]["banned"], true);
+    }
+
+    #[tokio::test]
+    async fn staff_can_expire_warning_and_recompute_user_state() {
+        let app = app_with_state(
+            AppState {
+                auth: AuthService::new_in_memory(),
+                forum: ForumService::new_in_memory(),
+                moderation: ModerationService::new_in_memory(),
+                permissions: staff_permission_service(),
+                secure_cookies: true,
+            },
+            1_048_576,
+        );
+        let cookie = register_and_login(&app).await;
+
+        let warning = app
+            .clone()
+            .oneshot(json_request_with_cookie(
+                "/api/v1/moderation/warnings",
+                &cookie,
+                json!({
+                    "target_user_id": "user:target",
+                    "reason": "temporary timeout",
+                    "points": 10
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(warning.status(), StatusCode::CREATED);
+        let warning = body_json(warning).await;
+        let warning_id = warning["warning"]["id"].as_str().unwrap();
+        assert_eq!(warning["user_state"]["banned"], true);
+
+        let expired = app
+            .clone()
+            .oneshot(json_request_with_cookie(
+                &format!("/api/v1/moderation/warnings/{warning_id}/expire"),
+                &cookie,
+                json!({
+                    "resolution": "points decayed"
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(expired.status(), StatusCode::OK);
+        let expired = body_json(expired).await;
+        assert_eq!(expired["warning"]["active"], false);
+        assert_eq!(expired["user_state"]["active_warning_points"], 0);
+        assert_eq!(expired["user_state"]["muted"], false);
+        assert_eq!(expired["user_state"]["banned"], false);
+
+        let second_expire = app
+            .clone()
+            .oneshot(json_request_with_cookie(
+                &format!("/api/v1/moderation/warnings/{warning_id}/expire"),
+                &cookie,
+                json!({
+                    "resolution": "again"
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(second_expire.status(), StatusCode::CONFLICT);
+
+        let audit = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/moderation/audit")
+                    .header(COOKIE, cookie.as_str())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(audit.status(), StatusCode::OK);
+        let audit = body_json(audit).await;
+        assert_eq!(audit["events"][1]["action"], "warning.expired");
+        assert_eq!(audit["events"][1]["previous_state"]["banned"], true);
+        assert_eq!(audit["events"][1]["new_state"]["banned"], false);
     }
 
     async fn register_and_login(app: &Router) -> String {

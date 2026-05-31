@@ -58,6 +58,7 @@ pub enum AuditAction {
     ApprovalQueued,
     ApprovalResolved,
     WarningIssued,
+    WarningExpired,
     UserShadowbanSet,
 }
 
@@ -78,7 +79,9 @@ pub enum ModerationError {
     InvalidPoints,
     ReportNotFound,
     ApprovalNotFound,
+    WarningNotFound,
     AlreadyResolved,
+    WarningInactive,
     StorePoisoned,
 }
 
@@ -290,6 +293,56 @@ impl ModerationService {
         Ok(warning)
     }
 
+    pub fn expire_warning(
+        &self,
+        actor_id: &str,
+        warning_id: &str,
+        reason: &str,
+    ) -> Result<(Warning, UserModerationState), ModerationError> {
+        let reason = clean_reason(reason)?;
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| ModerationError::StorePoisoned)?;
+        let target_user_id = {
+            let warning = state
+                .warnings
+                .get(warning_id)
+                .ok_or(ModerationError::WarningNotFound)?;
+            if !warning.active {
+                return Err(ModerationError::WarningInactive);
+            }
+            warning.target_user_id.clone()
+        };
+        let previous_state = state
+            .users
+            .get(&target_user_id)
+            .cloned()
+            .unwrap_or_default();
+        let warning = state
+            .warnings
+            .get_mut(warning_id)
+            .ok_or(ModerationError::WarningNotFound)?;
+        warning.active = false;
+        let expired = warning.clone();
+        recompute_user_state(&mut state, &target_user_id);
+        let new_state = state
+            .users
+            .get(&target_user_id)
+            .cloned()
+            .unwrap_or_default();
+        push_audit(
+            &mut state,
+            actor_id,
+            AuditAction::WarningExpired,
+            &target_user_id,
+            Some(previous_state),
+            Some(new_state.clone()),
+            &format!("warning expired: {reason}"),
+        );
+        Ok((expired, new_state))
+    }
+
     pub fn set_shadowbanned(
         &self,
         actor_id: &str,
@@ -404,7 +457,9 @@ impl fmt::Display for ModerationError {
             Self::InvalidPoints => formatter.write_str("invalid warning points"),
             Self::ReportNotFound => formatter.write_str("report not found"),
             Self::ApprovalNotFound => formatter.write_str("approval item not found"),
+            Self::WarningNotFound => formatter.write_str("warning not found"),
             Self::AlreadyResolved => formatter.write_str("moderation item is already resolved"),
+            Self::WarningInactive => formatter.write_str("warning is already inactive"),
             Self::StorePoisoned => formatter.write_str("moderation store lock is poisoned"),
         }
     }
@@ -659,6 +714,58 @@ mod tests {
                 shadowbanned: false,
             }
         );
+    }
+
+    #[test]
+    fn expiring_warnings_recomputes_user_state_and_writes_audit() {
+        let moderation = ModerationService::new_in_memory();
+        let warning = moderation
+            .issue_warning("user:mod", "user:target", None, "major abuse", 10)
+            .unwrap();
+        assert!(moderation.user_state("user:target").unwrap().banned);
+
+        let (expired, state) = moderation
+            .expire_warning("user:mod", &warning.id, "points decayed")
+            .unwrap();
+
+        assert!(!expired.active);
+        assert_eq!(state.active_warning_points, 0);
+        assert!(!state.muted);
+        assert!(!state.banned);
+
+        let audit = moderation.audit_events().unwrap();
+        assert_eq!(audit.len(), 2);
+        assert_eq!(audit[1].action, AuditAction::WarningExpired);
+        assert_eq!(
+            audit[1].previous_state,
+            Some(UserModerationState {
+                active_warning_points: 10,
+                muted: true,
+                banned: true,
+                shadowbanned: false,
+            })
+        );
+        assert_eq!(audit[1].new_state, Some(UserModerationState::default()));
+    }
+
+    #[test]
+    fn inactive_warnings_cannot_be_expired_again() {
+        let moderation = ModerationService::new_in_memory();
+        let warning = moderation
+            .issue_warning("user:mod", "user:target", None, "spam", 1)
+            .unwrap();
+        moderation
+            .expire_warning("user:mod", &warning.id, "resolved")
+            .unwrap();
+
+        assert!(matches!(
+            moderation.expire_warning("user:mod", &warning.id, "again"),
+            Err(ModerationError::WarningInactive)
+        ));
+        assert!(matches!(
+            moderation.expire_warning("user:mod", "warning:missing", "missing"),
+            Err(ModerationError::WarningNotFound)
+        ));
     }
 
     #[test]

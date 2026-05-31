@@ -156,6 +156,8 @@ Current preview:
   changes, queue resolution, and audit reads.
 - Warning records with active warning points.
 - Automatic mute and ban state at configured warning point thresholds.
+- Warning expiration that marks warnings inactive, recomputes points, and
+  audits the state transition.
 - Shadowban state and forum read filtering that hides shadowbanned authors
   from other users while preserving the author's own view.
 - Append-only audit events for report creation, approval queuing, warning
