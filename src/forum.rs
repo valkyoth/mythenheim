@@ -23,6 +23,12 @@ pub struct Category {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CategoryNode {
+    pub category: Category,
+    pub children: Vec<CategoryNode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Topic {
     pub id: String,
     pub category_id: String,
@@ -185,6 +191,14 @@ impl ForumService {
         Ok(categories)
     }
 
+    pub fn category_tree_for(
+        &self,
+        can_read_private: bool,
+    ) -> Result<Vec<CategoryNode>, ForumError> {
+        let categories = self.list_categories_for(can_read_private)?;
+        Ok(build_category_tree(None, &categories))
+    }
+
     pub fn create_topic(
         &self,
         category_id: &str,
@@ -310,6 +324,24 @@ impl ForumService {
             topic: topic.public(),
             posts,
         })
+    }
+
+    pub fn get_post(&self, post_id: &str, can_read_private: bool) -> Result<Post, ForumError> {
+        let state = self.inner.lock().map_err(|_| ForumError::StorePoisoned)?;
+        let post = state
+            .posts
+            .get(post_id)
+            .filter(|post| !post.deleted)
+            .ok_or(ForumError::PostNotFound)?;
+        let topic = state
+            .topics
+            .get(&post.topic_id)
+            .filter(|topic| !topic.deleted)
+            .ok_or(ForumError::TopicNotFound)?;
+        if !can_read_private && category_is_private(&state, &topic.category_id) {
+            return Err(ForumError::PostNotFound);
+        }
+        Ok(post.public())
     }
 
     pub fn reply(
@@ -567,6 +599,17 @@ fn category_is_private(state: &ForumState, category_id: &str) -> bool {
     false
 }
 
+fn build_category_tree(parent_id: Option<&str>, categories: &[Category]) -> Vec<CategoryNode> {
+    categories
+        .iter()
+        .filter(|category| category.parent_id.as_deref() == parent_id)
+        .map(|category| CategoryNode {
+            category: category.clone(),
+            children: build_category_tree(Some(&category.id), categories),
+        })
+        .collect()
+}
+
 fn slugify(value: &str) -> String {
     let mut slug = String::new();
     let mut previous_dash = false;
@@ -713,6 +756,53 @@ mod tests {
             Err(ForumError::TopicNotFound)
         ));
         assert!(forum.get_topic(&topic.topic.id, true).is_ok());
+    }
+
+    #[test]
+    fn category_tree_nests_visible_children() {
+        let forum = ForumService::new_in_memory();
+        let public = forum
+            .create_category("Public", Some("Visible"), None, false)
+            .unwrap();
+        let child = forum
+            .create_category("Child", None, Some(&public.id), false)
+            .unwrap();
+        let private = forum.create_category("Staff", None, None, true).unwrap();
+        forum
+            .create_category("Staff Child", None, Some(&private.id), false)
+            .unwrap();
+
+        let anonymous_tree = forum.category_tree_for(false).unwrap();
+        assert_eq!(anonymous_tree.len(), 1);
+        assert_eq!(anonymous_tree[0].category.id, public.id);
+        assert_eq!(anonymous_tree[0].children[0].category.id, child.id);
+
+        let authenticated_tree = forum.category_tree_for(true).unwrap();
+        assert_eq!(authenticated_tree.len(), 2);
+        assert_eq!(authenticated_tree[1].children.len(), 1);
+    }
+
+    #[test]
+    fn gets_posts_without_leaking_private_topics() {
+        let forum = ForumService::new_in_memory();
+        let public = forum.create_category("General", None, None, false).unwrap();
+        let public_topic = forum
+            .create_topic(&public.id, AUTHOR, "Public", "public body")
+            .unwrap();
+        let private = forum.create_category("Staff", None, None, true).unwrap();
+        let private_topic = forum
+            .create_topic(&private.id, AUTHOR, "Private", "private body")
+            .unwrap();
+
+        assert_eq!(
+            forum.get_post(&public_topic.posts[0].id, false).unwrap().id,
+            public_topic.posts[0].id
+        );
+        assert!(matches!(
+            forum.get_post(&private_topic.posts[0].id, false),
+            Err(ForumError::PostNotFound)
+        ));
+        assert!(forum.get_post(&private_topic.posts[0].id, true).is_ok());
     }
 
     #[test]

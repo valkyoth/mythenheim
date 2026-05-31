@@ -99,6 +99,8 @@ Current preview:
 - In-memory category, topic, first-post, and reply service.
 - Public read API and session-required write API.
 - Private category reads require an authenticated session.
+- Flat and nested category read APIs.
+- Direct post read API.
 - Post edit revisions and soft-delete primitives for posts/topics.
 - Topic list pagination accepts query parameters.
 - Sanitized Markdown persistence shape with raw HTML dropped before rendering.

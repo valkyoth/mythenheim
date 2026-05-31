@@ -6,7 +6,7 @@ use axum::{
         header::{COOKIE, RETRY_AFTER, SET_COOKIE},
     },
     response::{IntoResponse, Response},
-    routing::{get, patch, post},
+    routing::{get, post},
 };
 use clap::Parser;
 use mythenheim::{
@@ -17,7 +17,10 @@ use mythenheim::{
     },
     config::AppConfig,
     db::migrations,
-    forum::{Category, DEFAULT_PAGE_SIZE, ForumError, ForumService, Post, Topic, TopicDetail},
+    forum::{
+        Category, CategoryNode, DEFAULT_PAGE_SIZE, ForumError, ForumService, Post, Topic,
+        TopicDetail,
+    },
 };
 use serde::{Deserialize, Serialize};
 use std::{net::SocketAddr, path::PathBuf};
@@ -113,6 +116,11 @@ struct CategoriesResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct CategoryTreeResponse {
+    categories: Vec<CategoryNodeResponse>,
+}
+
+#[derive(Debug, Serialize)]
 struct CategoryResponse {
     id: String,
     name: String,
@@ -121,6 +129,12 @@ struct CategoryResponse {
     parent_id: Option<String>,
     is_locked: bool,
     is_private: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct CategoryNodeResponse {
+    category: CategoryResponse,
+    children: Vec<CategoryNodeResponse>,
 }
 
 #[derive(Debug, Serialize)]
@@ -230,6 +244,7 @@ fn app_with_state(state: AppState, max_request_body_bytes: usize) -> Router {
             "/api/v1/categories",
             get(list_categories).post(create_category),
         )
+        .route("/api/v1/categories/tree", get(category_tree))
         .route(
             "/api/v1/categories/{category_id}/topics",
             get(list_topics).post(create_topic),
@@ -241,7 +256,7 @@ fn app_with_state(state: AppState, max_request_body_bytes: usize) -> Router {
         .route("/api/v1/topics/{topic_id}/posts", post(create_post))
         .route(
             "/api/v1/posts/{post_id}",
-            patch(edit_post).delete(delete_post),
+            get(get_post).patch(edit_post).delete(delete_post),
         )
         .layer(DefaultBodyLimit::max(max_request_body_bytes))
         .layer(TraceLayer::new_for_http())
@@ -314,6 +329,20 @@ async fn list_categories(State(state): State<AppState>, headers: HeaderMap) -> R
     match state.forum.list_categories_for(can_read_private) {
         Ok(categories) => Json(CategoriesResponse {
             categories: categories.into_iter().map(CategoryResponse::from).collect(),
+        })
+        .into_response(),
+        Err(err) => forum_error_response(err),
+    }
+}
+
+async fn category_tree(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let can_read_private = authenticated_user(&state, &headers).is_some();
+    match state.forum.category_tree_for(can_read_private) {
+        Ok(categories) => Json(CategoryTreeResponse {
+            categories: categories
+                .into_iter()
+                .map(CategoryNodeResponse::from)
+                .collect(),
         })
         .into_response(),
         Err(err) => forum_error_response(err),
@@ -406,6 +435,18 @@ async fn create_post(
 
     match state.forum.reply(&topic_id, &user.id, &payload.content) {
         Ok(post) => (StatusCode::CREATED, Json(PostResponse::from(post))).into_response(),
+        Err(err) => forum_error_response(err),
+    }
+}
+
+async fn get_post(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Path(post_id): axum::extract::Path<String>,
+) -> Response {
+    let can_read_private = authenticated_user(&state, &headers).is_some();
+    match state.forum.get_post(&post_id, can_read_private) {
+        Ok(post) => Json(PostResponse::from(post)).into_response(),
         Err(err) => forum_error_response(err),
     }
 }
@@ -546,6 +587,19 @@ impl From<Category> for CategoryResponse {
             parent_id: category.parent_id,
             is_locked: category.is_locked,
             is_private: category.is_private,
+        }
+    }
+}
+
+impl From<CategoryNode> for CategoryNodeResponse {
+    fn from(node: CategoryNode) -> Self {
+        Self {
+            category: CategoryResponse::from(node.category),
+            children: node
+                .children
+                .into_iter()
+                .map(CategoryNodeResponse::from)
+                .collect(),
         }
     }
 }
@@ -863,6 +917,21 @@ mod tests {
         let categories = body_json(list_categories).await;
         assert_eq!(categories["categories"].as_array().unwrap().len(), 1);
 
+        let category_tree = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/categories/tree")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(category_tree.status(), StatusCode::OK);
+        let tree = body_json(category_tree).await;
+        assert_eq!(tree["categories"].as_array().unwrap().len(), 1);
+        assert_eq!(tree["categories"][0]["category"]["slug"], "general-talk");
+
         let topic_response = app
             .clone()
             .oneshot(json_request_with_cookie(
@@ -929,6 +998,19 @@ mod tests {
                 .unwrap()
                 .contains("<strong>reply</strong>")
         );
+
+        let get_reply = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v1/posts/{reply_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(get_reply.status(), StatusCode::OK);
+        assert_eq!(body_json(get_reply).await["revision"], 2);
 
         let get_topic = app
             .clone()
@@ -1079,7 +1161,23 @@ mod tests {
             .unwrap();
         assert_eq!(anonymous_topic.status(), StatusCode::NOT_FOUND);
 
+        let anonymous_post = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/v1/posts/{}",
+                        topic["posts"][0]["id"].as_str().unwrap()
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(anonymous_post.status(), StatusCode::NOT_FOUND);
+
         let authenticated_topic = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .uri(format!("/api/v1/topics/{topic_id}"))
@@ -1090,6 +1188,21 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(authenticated_topic.status(), StatusCode::OK);
+
+        let authenticated_post = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/v1/posts/{}",
+                        topic["posts"][0]["id"].as_str().unwrap()
+                    ))
+                    .header(COOKIE, cookie.as_str())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(authenticated_post.status(), StatusCode::OK);
     }
 
     async fn register_and_login(app: &Router) -> String {

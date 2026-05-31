@@ -98,6 +98,15 @@ if [ -z "$category_id" ]; then
     exit 1
 fi
 
+category_tree="$(curl -sSf "http://127.0.0.1:$port/api/v1/categories/tree")"
+case "$category_tree" in
+    *"\"category\""*"\"slug\":\"smoke-forum-"*) ;;
+    *)
+        echo "category tree response did not include expected category" >&2
+        exit 1
+        ;;
+esac
+
 topic_body="{\"title\":\"Smoke Topic $port\",\"content\":\"hello **forum**\"}"
 topic_json="$(curl -sSf \
     -X POST "http://127.0.0.1:$port/api/v1/categories/$category_id/topics" \
@@ -132,6 +141,15 @@ case "$edited_reply" in
     *"\"revision\":2"* | *"\"revision\": 2"*) ;;
     *)
         echo "edited reply response did not include expected revision" >&2
+        exit 1
+        ;;
+esac
+
+post_loaded="$(curl -sSf "http://127.0.0.1:$port/api/v1/posts/$reply_id")"
+case "$post_loaded" in
+    *"\"revision\":2"* | *"\"revision\": 2"*) ;;
+    *)
+        echo "post response did not include expected edited revision" >&2
         exit 1
         ;;
 esac

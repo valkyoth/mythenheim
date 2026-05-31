@@ -8,10 +8,12 @@ sanitization before SurrealDB persistence is wired in.
 
 - `GET /api/v1/categories`
 - `POST /api/v1/categories`
+- `GET /api/v1/categories/tree`
 - `GET /api/v1/categories/{category_id}/topics`
 - `POST /api/v1/categories/{category_id}/topics`
 - `GET /api/v1/topics/{topic_id}`
 - `DELETE /api/v1/topics/{topic_id}`
+- `GET /api/v1/posts/{post_id}`
 - `POST /api/v1/topics/{topic_id}/posts`
 - `PATCH /api/v1/posts/{post_id}`
 - `DELETE /api/v1/posts/{post_id}`
@@ -25,10 +27,12 @@ capabilities.
 
 - Category and topic slugs are generated from titles and made unique.
 - Categories can be public or private and can have parents.
+- Category reads are available as flat lists and nested trees.
 - Topic creation creates the first post.
 - Topic lists accept `page` and `page_size` query parameters.
 - Replies increment topic `reply_count`.
 - Posts store both raw Markdown and sanitized HTML.
+- Posts can be read directly or through topic detail.
 - Post edits re-render sanitized HTML and increment `revision`.
 - Deleting a reply soft-deletes that post and decrements `reply_count`.
 - Deleting a topic, or deleting its first post, soft-deletes the topic and its
