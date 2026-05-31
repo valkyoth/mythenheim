@@ -15,6 +15,20 @@ APIs.
 - `AuditEvent` records staff and automated moderation actions with previous
   and new user moderation state where the action changes a user.
 
+## Routes
+
+- `POST /api/v1/posts/{post_id}/reports`
+- `GET /api/v1/moderation/reports`
+- `GET /api/v1/moderation/approvals`
+- `POST /api/v1/moderation/warnings`
+- `POST /api/v1/moderation/users/{user_id}/shadowban`
+- `GET /api/v1/moderation/audit`
+
+Reporting a post requires an authenticated user and the post must be visible to
+that user. Queue reads require `moderation.queue.read`, warnings require
+`user.warn`, shadowban changes require `user.shadowban`, and audit reads
+require `audit.read`.
+
 ## Current Rules
 
 - Moderation reasons are required, length-limited, and reject NUL bytes.
@@ -26,9 +40,11 @@ APIs.
 - Other authenticated users and anonymous users cannot see content authored by
   shadowbanned users through topic, topic-list, or direct-post reads.
 - Audit events are append-only in the preview service API.
+- Staff-facing preview routes are capability-gated before they call the
+  moderation service.
 
 ## Current Limits
 
 The service is still in-memory. Persistent queues, staff dashboard routes,
-permission-gated moderation APIs, warning expiration, transactional moderation
-macros, and delayed moderation jobs remain follow-up `0.15.0` work.
+warning expiration, transactional moderation macros, and delayed moderation
+jobs remain follow-up `0.15.0` work.
