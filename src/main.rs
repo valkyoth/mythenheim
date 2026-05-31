@@ -1112,7 +1112,8 @@ fn moderation_error_response(err: ModerationError) -> Response {
         | ModerationError::EmptyMacro => StatusCode::BAD_REQUEST,
         ModerationError::ReportNotFound
         | ModerationError::ApprovalNotFound
-        | ModerationError::WarningNotFound => StatusCode::NOT_FOUND,
+        | ModerationError::WarningNotFound
+        | ModerationError::JobNotFound => StatusCode::NOT_FOUND,
         ModerationError::AlreadyResolved => StatusCode::CONFLICT,
         ModerationError::WarningInactive => StatusCode::CONFLICT,
         ModerationError::StorePoisoned => StatusCode::INTERNAL_SERVER_ERROR,

@@ -16,6 +16,8 @@ APIs.
   and new user moderation state where the action changes a user.
 - `ModerationMacroAction` describes reusable moderation action sequences such
   as resolving a report, warning a user, and shadowbanning the same account.
+- `ModerationJob` stores a delayed macro action list with a due tick and
+  pending, completed, or failed status.
 
 ## Routes
 
@@ -55,11 +57,14 @@ shadowban changes require `user.shadowban`, and audit reads require
 - Moderation macros execute transactionally in the preview service and API: if
   any action fails, no queue, warning, user-state, or audit changes from that
   macro are committed.
+- Delayed moderation jobs execute due macro action lists once. Successful jobs
+  are marked completed; failed jobs keep their previous queue/user/audit state
+  untouched and record the failure message.
 - Staff-facing preview routes are capability-gated before they call the
   moderation service.
 
 ## Current Limits
 
 The service is still in-memory. Persistent queues, staff dashboard routes,
-stored macro definitions and delayed moderation jobs remain follow-up `0.15.0`
-work.
+stored macro definitions and delayed moderation job API routes remain follow-up
+`0.15.0` work.

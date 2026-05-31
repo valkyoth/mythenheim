@@ -69,6 +69,30 @@ pub struct MacroExecution {
     pub audit_event_count: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModerationJob {
+    pub id: String,
+    pub actor_id: String,
+    pub run_at_tick: u64,
+    pub status: JobStatus,
+    pub actions: Vec<ModerationMacroAction>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobStatus {
+    Pending,
+    Completed,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobRunSummary {
+    pub checked: usize,
+    pub completed: usize,
+    pub failed: usize,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QueueStatus {
     Open,
@@ -115,6 +139,7 @@ pub enum ModerationError {
     AlreadyResolved,
     WarningInactive,
     EmptyMacro,
+    JobNotFound,
     StorePoisoned,
 }
 
@@ -128,12 +153,14 @@ struct ModerationState {
     next_report_id: u64,
     next_approval_id: u64,
     next_warning_id: u64,
+    next_job_id: u64,
     next_audit_id: u64,
     reports: HashMap<String, Report>,
     approvals: HashMap<String, ApprovalItem>,
     warnings: HashMap<String, Warning>,
     warning_ids_by_user: HashMap<String, Vec<String>>,
     users: HashMap<String, UserModerationState>,
+    jobs: HashMap<String, ModerationJob>,
     audit_events: Vec<AuditEvent>,
 }
 
@@ -144,6 +171,7 @@ impl ModerationService {
                 next_report_id: 1,
                 next_approval_id: 1,
                 next_warning_id: 1,
+                next_job_id: 1,
                 next_audit_id: 1,
                 ..ModerationState::default()
             })),
@@ -331,6 +359,19 @@ impl ModerationService {
         actor_id: &str,
         actions: &[ModerationMacroAction],
     ) -> Result<MacroExecution, ModerationError> {
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| ModerationError::StorePoisoned)?;
+        execute_macro_in_state(&mut state, actor_id, actions)
+    }
+
+    pub fn schedule_job(
+        &self,
+        actor_id: &str,
+        run_at_tick: u64,
+        actions: Vec<ModerationMacroAction>,
+    ) -> Result<ModerationJob, ModerationError> {
         if actions.is_empty() {
             return Err(ModerationError::EmptyMacro);
         }
@@ -338,61 +379,75 @@ impl ModerationService {
             .inner
             .lock()
             .map_err(|_| ModerationError::StorePoisoned)?;
-        let mut candidate = state.clone();
-        let audit_start = candidate.audit_events.len();
+        let job = ModerationJob {
+            id: format!("job:{}", state.next_job_id),
+            actor_id: actor_id.to_owned(),
+            run_at_tick,
+            status: JobStatus::Pending,
+            actions,
+            last_error: None,
+        };
+        state.next_job_id += 1;
+        state.jobs.insert(job.id.clone(), job.clone());
+        Ok(job)
+    }
 
-        for action in actions {
-            match action {
-                ModerationMacroAction::ResolveReport {
-                    report_id,
-                    resolution,
-                } => {
-                    resolve_report_in_state(&mut candidate, actor_id, report_id, resolution)?;
+    pub fn run_due_jobs(&self, now_tick: u64) -> Result<JobRunSummary, ModerationError> {
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| ModerationError::StorePoisoned)?;
+        let mut due_job_ids = state
+            .jobs
+            .values()
+            .filter(|job| job.status == JobStatus::Pending && job.run_at_tick <= now_tick)
+            .map(|job| job.id.clone())
+            .collect::<Vec<_>>();
+        due_job_ids.sort();
+
+        let mut summary = JobRunSummary {
+            checked: due_job_ids.len(),
+            completed: 0,
+            failed: 0,
+        };
+
+        for job_id in due_job_ids {
+            let Some(job) = state.jobs.get(&job_id).cloned() else {
+                continue;
+            };
+            let mut candidate = state.clone();
+            match execute_macro_in_state(&mut candidate, &job.actor_id, &job.actions) {
+                Ok(_) => {
+                    if let Some(candidate_job) = candidate.jobs.get_mut(&job_id) {
+                        candidate_job.status = JobStatus::Completed;
+                        candidate_job.last_error = None;
+                    }
+                    *state = candidate;
+                    summary.completed += 1;
                 }
-                ModerationMacroAction::ResolveApproval {
-                    approval_id,
-                    resolution,
-                } => {
-                    resolve_approval_in_state(&mut candidate, actor_id, approval_id, resolution)?;
-                }
-                ModerationMacroAction::IssueWarning {
-                    target_user_id,
-                    target_id,
-                    reason,
-                    points,
-                } => {
-                    issue_warning_in_state(
-                        &mut candidate,
-                        actor_id,
-                        target_user_id,
-                        target_id.as_deref(),
-                        reason,
-                        *points,
-                    )?;
-                }
-                ModerationMacroAction::ExpireWarning { warning_id, reason } => {
-                    expire_warning_in_state(&mut candidate, actor_id, warning_id, reason)?;
-                }
-                ModerationMacroAction::SetShadowban {
-                    target_user_id,
-                    shadowbanned,
-                } => {
-                    set_shadowbanned_in_state(
-                        &mut candidate,
-                        actor_id,
-                        target_user_id,
-                        *shadowbanned,
-                    );
+                Err(err) => {
+                    if let Some(failed_job) = state.jobs.get_mut(&job_id) {
+                        failed_job.status = JobStatus::Failed;
+                        failed_job.last_error = Some(err.to_string());
+                    }
+                    summary.failed += 1;
                 }
             }
         }
 
-        let audit_event_count = candidate.audit_events.len().saturating_sub(audit_start);
-        *state = candidate;
-        Ok(MacroExecution {
-            action_count: actions.len(),
-            audit_event_count,
-        })
+        Ok(summary)
+    }
+
+    pub fn job(&self, job_id: &str) -> Result<ModerationJob, ModerationError> {
+        let state = self
+            .inner
+            .lock()
+            .map_err(|_| ModerationError::StorePoisoned)?;
+        state
+            .jobs
+            .get(job_id)
+            .cloned()
+            .ok_or(ModerationError::JobNotFound)
     }
 
     pub fn expire_warning(
@@ -563,6 +618,7 @@ impl fmt::Display for ModerationError {
             Self::AlreadyResolved => formatter.write_str("moderation item is already resolved"),
             Self::WarningInactive => formatter.write_str("warning is already inactive"),
             Self::EmptyMacro => formatter.write_str("moderation macro must contain actions"),
+            Self::JobNotFound => formatter.write_str("moderation job not found"),
             Self::StorePoisoned => formatter.write_str("moderation store lock is poisoned"),
         }
     }
@@ -735,6 +791,66 @@ fn set_shadowbanned_in_state(
         "shadowban changed",
     );
     new_state
+}
+
+fn execute_macro_in_state(
+    state: &mut ModerationState,
+    actor_id: &str,
+    actions: &[ModerationMacroAction],
+) -> Result<MacroExecution, ModerationError> {
+    if actions.is_empty() {
+        return Err(ModerationError::EmptyMacro);
+    }
+    let mut candidate = state.clone();
+    let audit_start = candidate.audit_events.len();
+
+    for action in actions {
+        match action {
+            ModerationMacroAction::ResolveReport {
+                report_id,
+                resolution,
+            } => {
+                resolve_report_in_state(&mut candidate, actor_id, report_id, resolution)?;
+            }
+            ModerationMacroAction::ResolveApproval {
+                approval_id,
+                resolution,
+            } => {
+                resolve_approval_in_state(&mut candidate, actor_id, approval_id, resolution)?;
+            }
+            ModerationMacroAction::IssueWarning {
+                target_user_id,
+                target_id,
+                reason,
+                points,
+            } => {
+                issue_warning_in_state(
+                    &mut candidate,
+                    actor_id,
+                    target_user_id,
+                    target_id.as_deref(),
+                    reason,
+                    *points,
+                )?;
+            }
+            ModerationMacroAction::ExpireWarning { warning_id, reason } => {
+                expire_warning_in_state(&mut candidate, actor_id, warning_id, reason)?;
+            }
+            ModerationMacroAction::SetShadowban {
+                target_user_id,
+                shadowbanned,
+            } => {
+                set_shadowbanned_in_state(&mut candidate, actor_id, target_user_id, *shadowbanned);
+            }
+        }
+    }
+
+    let audit_event_count = candidate.audit_events.len().saturating_sub(audit_start);
+    *state = candidate;
+    Ok(MacroExecution {
+        action_count: actions.len(),
+        audit_event_count,
+    })
 }
 
 fn clean_reason(value: &str) -> Result<String, ModerationError> {
@@ -1132,6 +1248,128 @@ mod tests {
         assert_eq!(
             moderation.execute_macro("user:mod", &[]).unwrap_err(),
             ModerationError::EmptyMacro
+        );
+    }
+
+    #[test]
+    fn due_jobs_execute_once() {
+        let moderation = ModerationService::new_in_memory();
+        moderation.report("user:1", "post:1", "spam").unwrap();
+        let job = moderation
+            .schedule_job(
+                "user:mod",
+                10,
+                vec![
+                    ModerationMacroAction::ResolveReport {
+                        report_id: "report:1".to_owned(),
+                        resolution: "handled later".to_owned(),
+                    },
+                    ModerationMacroAction::IssueWarning {
+                        target_user_id: "user:1".to_owned(),
+                        target_id: Some("post:1".to_owned()),
+                        reason: "spam".to_owned(),
+                        points: 5,
+                    },
+                ],
+            )
+            .unwrap();
+
+        assert_eq!(
+            moderation.run_due_jobs(9).unwrap(),
+            JobRunSummary {
+                checked: 0,
+                completed: 0,
+                failed: 0,
+            }
+        );
+        assert_eq!(
+            moderation.run_due_jobs(10).unwrap(),
+            JobRunSummary {
+                checked: 1,
+                completed: 1,
+                failed: 0,
+            }
+        );
+        assert_eq!(
+            moderation.job(&job.id).unwrap().status,
+            JobStatus::Completed
+        );
+        assert!(moderation.open_reports().unwrap().is_empty());
+        assert_eq!(
+            moderation
+                .user_state("user:1")
+                .unwrap()
+                .active_warning_points,
+            5
+        );
+        assert_eq!(
+            moderation.run_due_jobs(10).unwrap(),
+            JobRunSummary {
+                checked: 0,
+                completed: 0,
+                failed: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn failed_jobs_roll_back_actions_and_remain_failed() {
+        let moderation = ModerationService::new_in_memory();
+        moderation.report("user:1", "post:1", "spam").unwrap();
+        let job = moderation
+            .schedule_job(
+                "user:mod",
+                1,
+                vec![
+                    ModerationMacroAction::ResolveReport {
+                        report_id: "report:1".to_owned(),
+                        resolution: "would handle".to_owned(),
+                    },
+                    ModerationMacroAction::IssueWarning {
+                        target_user_id: "user:1".to_owned(),
+                        target_id: Some("post:1".to_owned()),
+                        reason: "invalid zero points".to_owned(),
+                        points: 0,
+                    },
+                ],
+            )
+            .unwrap();
+
+        assert_eq!(
+            moderation.run_due_jobs(1).unwrap(),
+            JobRunSummary {
+                checked: 1,
+                completed: 0,
+                failed: 1,
+            }
+        );
+        let failed_job = moderation.job(&job.id).unwrap();
+        assert_eq!(failed_job.status, JobStatus::Failed);
+        assert_eq!(
+            failed_job.last_error.as_deref(),
+            Some("invalid warning points")
+        );
+        assert_eq!(moderation.open_reports().unwrap().len(), 1);
+        assert_eq!(
+            moderation.user_state("user:1").unwrap(),
+            UserModerationState::default()
+        );
+        assert_eq!(moderation.audit_events().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn scheduling_empty_jobs_is_rejected() {
+        let moderation = ModerationService::new_in_memory();
+
+        assert_eq!(
+            moderation
+                .schedule_job("user:mod", 1, Vec::new())
+                .unwrap_err(),
+            ModerationError::EmptyMacro
+        );
+        assert_eq!(
+            moderation.job("job:missing").unwrap_err(),
+            ModerationError::JobNotFound
         );
     }
 
