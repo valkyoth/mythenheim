@@ -21,7 +21,9 @@ use mythenheim::{
         Category, CategoryNode, DEFAULT_PAGE_SIZE, ForumError, ForumService, Post, Topic,
         TopicDetail,
     },
-    permissions::{ActorPermissions, Capability, PermissionContext, Role, TrustLevel},
+    permissions::{
+        ActorPermissions, Capability, PermissionContext, PermissionService, Role, TrustLevel,
+    },
 };
 use serde::{Deserialize, Serialize};
 use std::{net::SocketAddr, path::PathBuf};
@@ -53,7 +55,7 @@ struct HealthResponse {
 struct AppState {
     auth: AuthService,
     forum: ForumService,
-    default_roles: Vec<Role>,
+    permissions: PermissionService,
     secure_cookies: bool,
 }
 
@@ -214,7 +216,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             AppState {
                 auth: AuthService::new_in_memory(),
                 forum: ForumService::new_in_memory(),
-                default_roles: preview_default_roles(),
+                permissions: preview_permission_service(),
                 secure_cookies,
             },
             max_request_body_bytes as usize,
@@ -230,7 +232,7 @@ fn app() -> Router {
         AppState {
             auth: AuthService::new_in_memory(),
             forum: ForumService::new_in_memory(),
-            default_roles: preview_default_roles(),
+            permissions: preview_permission_service(),
             secure_cookies: true,
         },
         1_048_576,
@@ -592,16 +594,19 @@ fn has_capability(
 }
 
 fn actor_permissions(state: &AppState, user: &PublicUser) -> ActorPermissions {
-    ActorPermissions {
-        actor_id: user.id.clone(),
-        trust_level: TrustLevel::from_u8(user.trust_level),
-        global_roles: state.default_roles.clone(),
-        category_roles: vec![],
-    }
+    state
+        .permissions
+        .actor_permissions(&user.id, TrustLevel::from_u8(user.trust_level))
+        .unwrap_or_else(|_| ActorPermissions {
+            actor_id: user.id.clone(),
+            trust_level: TrustLevel::from_u8(user.trust_level),
+            global_roles: vec![],
+            category_roles: vec![],
+        })
 }
 
-fn preview_default_roles() -> Vec<Role> {
-    vec![Role::new(
+fn preview_permission_service() -> PermissionService {
+    PermissionService::new_in_memory([Role::new(
         "role:preview-member",
         "Preview Member",
         [
@@ -613,7 +618,7 @@ fn preview_default_roles() -> Vec<Role> {
             Capability::parse_static("post.edit.own"),
             Capability::parse_static("post.delete.own"),
         ],
-    )]
+    )])
 }
 
 fn session_secret_from_headers(headers: &HeaderMap) -> Option<String> {
@@ -945,7 +950,7 @@ mod tests {
             AppState {
                 auth: AuthService::new_in_memory(),
                 forum: ForumService::new_in_memory(),
-                default_roles: preview_default_roles(),
+                permissions: preview_permission_service(),
                 secure_cookies: false,
             },
             32,
@@ -1002,7 +1007,7 @@ mod tests {
             AppState {
                 auth: AuthService::new_in_memory(),
                 forum: ForumService::new_in_memory(),
-                default_roles: vec![],
+                permissions: PermissionService::default(),
                 secure_cookies: true,
             },
             1_048_576,
@@ -1033,11 +1038,11 @@ mod tests {
             AppState {
                 auth: AuthService::new_in_memory(),
                 forum,
-                default_roles: vec![Role::new(
+                permissions: PermissionService::new_in_memory([Role::new(
                     "role:no-private-read",
                     "No Private Read",
                     [Capability::parse_static("category.create")],
-                )],
+                )]),
                 secure_cookies: true,
             },
             1_048_576,

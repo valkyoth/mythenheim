@@ -1,4 +1,9 @@
-use std::{collections::HashSet, fmt, str::FromStr};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt,
+    str::FromStr,
+    sync::{Arc, Mutex},
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Capability(String);
@@ -92,7 +97,9 @@ pub struct PermissionContext {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PermissionError {
     InvalidCapability(CapabilityParseError),
+    RoleNotFound,
     EscalatingRoleAssignment { missing: Vec<Capability> },
+    StorePoisoned,
 }
 
 impl TrustLevel {
@@ -201,10 +208,158 @@ impl ActorPermissions {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct PermissionService {
+    inner: Arc<Mutex<PermissionState>>,
+}
+
+#[derive(Debug, Default)]
+struct PermissionState {
+    roles: HashMap<String, Role>,
+    default_role_ids: Vec<String>,
+    global_assignments: HashMap<String, HashSet<String>>,
+    category_assignments: HashMap<(String, String), HashSet<String>>,
+}
+
+impl PermissionService {
+    pub fn new_in_memory(default_roles: impl IntoIterator<Item = Role>) -> Self {
+        let mut state = PermissionState::default();
+        for role in default_roles {
+            state.default_role_ids.push(role.id.clone());
+            state.roles.insert(role.id.clone(), role);
+        }
+        Self {
+            inner: Arc::new(Mutex::new(state)),
+        }
+    }
+
+    pub fn define_role(&self, role: Role) -> Result<(), PermissionError> {
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| PermissionError::StorePoisoned)?;
+        state.roles.insert(role.id.clone(), role);
+        Ok(())
+    }
+
+    pub fn actor_permissions(
+        &self,
+        user_id: &str,
+        trust_level: TrustLevel,
+    ) -> Result<ActorPermissions, PermissionError> {
+        let state = self
+            .inner
+            .lock()
+            .map_err(|_| PermissionError::StorePoisoned)?;
+        Ok(actor_permissions_from_state(&state, user_id, trust_level))
+    }
+
+    pub fn assign_global_role(
+        &self,
+        actor_id: &str,
+        actor_trust_level: TrustLevel,
+        target_user_id: &str,
+        role_id: &str,
+    ) -> Result<(), PermissionError> {
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| PermissionError::StorePoisoned)?;
+        let role = state
+            .roles
+            .get(role_id)
+            .cloned()
+            .ok_or(PermissionError::RoleNotFound)?;
+        let actor = actor_permissions_from_state(&state, actor_id, actor_trust_level);
+        actor.can_assign_role(&role)?;
+        state
+            .global_assignments
+            .entry(target_user_id.to_owned())
+            .or_default()
+            .insert(role_id.to_owned());
+        Ok(())
+    }
+
+    pub fn grant_global_role_for_bootstrap(
+        &self,
+        target_user_id: &str,
+        role_id: &str,
+    ) -> Result<(), PermissionError> {
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| PermissionError::StorePoisoned)?;
+        if !state.roles.contains_key(role_id) {
+            return Err(PermissionError::RoleNotFound);
+        }
+        state
+            .global_assignments
+            .entry(target_user_id.to_owned())
+            .or_default()
+            .insert(role_id.to_owned());
+        Ok(())
+    }
+
+    pub fn assign_category_role(
+        &self,
+        actor_id: &str,
+        actor_trust_level: TrustLevel,
+        target_user_id: &str,
+        category_id: &str,
+        role_id: &str,
+    ) -> Result<(), PermissionError> {
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| PermissionError::StorePoisoned)?;
+        let role = state
+            .roles
+            .get(role_id)
+            .cloned()
+            .ok_or(PermissionError::RoleNotFound)?;
+        let actor = actor_permissions_from_state(&state, actor_id, actor_trust_level);
+        actor.can_assign_role(&role)?;
+        state
+            .category_assignments
+            .entry((target_user_id.to_owned(), category_id.to_owned()))
+            .or_default()
+            .insert(role_id.to_owned());
+        Ok(())
+    }
+
+    pub fn grant_category_role_for_bootstrap(
+        &self,
+        target_user_id: &str,
+        category_id: &str,
+        role_id: &str,
+    ) -> Result<(), PermissionError> {
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| PermissionError::StorePoisoned)?;
+        if !state.roles.contains_key(role_id) {
+            return Err(PermissionError::RoleNotFound);
+        }
+        state
+            .category_assignments
+            .entry((target_user_id.to_owned(), category_id.to_owned()))
+            .or_default()
+            .insert(role_id.to_owned());
+        Ok(())
+    }
+}
+
+impl Default for PermissionService {
+    fn default() -> Self {
+        Self::new_in_memory([])
+    }
+}
+
 impl fmt::Display for PermissionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidCapability(err) => write!(formatter, "{err}"),
+            Self::RoleNotFound => formatter.write_str("role not found"),
             Self::EscalatingRoleAssignment { missing } => {
                 write!(
                     formatter,
@@ -212,6 +367,7 @@ impl fmt::Display for PermissionError {
                     missing.len()
                 )
             }
+            Self::StorePoisoned => formatter.write_str("permission store lock is poisoned"),
         }
     }
 }
@@ -270,6 +426,63 @@ fn trust_capabilities(trust_level: TrustLevel) -> HashSet<Capability> {
     }
 
     capabilities
+}
+
+fn actor_permissions_from_state(
+    state: &PermissionState,
+    user_id: &str,
+    trust_level: TrustLevel,
+) -> ActorPermissions {
+    let mut seen_global = HashSet::new();
+    let mut global_roles = Vec::new();
+
+    for role_id in &state.default_role_ids {
+        if seen_global.insert(role_id.clone())
+            && let Some(role) = state.roles.get(role_id)
+        {
+            global_roles.push(role.clone());
+        }
+    }
+    if let Some(role_ids) = state.global_assignments.get(user_id) {
+        let mut sorted_role_ids = role_ids.iter().collect::<Vec<_>>();
+        sorted_role_ids.sort();
+        for role_id in sorted_role_ids {
+            if seen_global.insert(role_id.clone())
+                && let Some(role) = state.roles.get(role_id)
+            {
+                global_roles.push(role.clone());
+            }
+        }
+    }
+
+    let mut category_roles = Vec::new();
+    let mut scoped_keys = state
+        .category_assignments
+        .iter()
+        .filter(|((assigned_user_id, _), _)| assigned_user_id == user_id)
+        .collect::<Vec<_>>();
+    scoped_keys.sort_by(|((_, left_category), _), ((_, right_category), _)| {
+        left_category.cmp(right_category)
+    });
+    for ((_, category_id), role_ids) in scoped_keys {
+        let mut sorted_role_ids = role_ids.iter().collect::<Vec<_>>();
+        sorted_role_ids.sort();
+        for role_id in sorted_role_ids {
+            if let Some(role) = state.roles.get(role_id) {
+                category_roles.push(ScopedRole {
+                    category_id: category_id.clone(),
+                    role: role.clone(),
+                });
+            }
+        }
+    }
+
+    ActorPermissions {
+        actor_id: user_id.to_owned(),
+        trust_level,
+        global_roles,
+        category_roles,
+    }
 }
 
 fn is_valid_segment(value: &str) -> bool {
@@ -473,6 +686,138 @@ mod tests {
         assert!(matches!(
             err,
             PermissionError::EscalatingRoleAssignment { missing } if missing == vec![Capability::parse_static("system.settings.write")]
+        ));
+    }
+
+    #[test]
+    fn permission_service_resolves_default_and_assigned_roles() {
+        let service = PermissionService::new_in_memory([Role::new(
+            "role:member",
+            "Member",
+            [Capability::parse_static("post.reply")],
+        )]);
+        service
+            .define_role(Role::new(
+                "role:moderator",
+                "Moderator",
+                [Capability::parse_static("post.edit.any")],
+            ))
+            .unwrap();
+        service
+            .define_role(Role::new(
+                "role:moderator-granter",
+                "Moderator Granter",
+                [Capability::parse_static("post.edit.any")],
+            ))
+            .unwrap();
+        service
+            .grant_global_role_for_bootstrap("user:admin", "role:moderator-granter")
+            .unwrap();
+        service
+            .assign_global_role(
+                "user:admin",
+                TrustLevel::NewSeed,
+                "user:2",
+                "role:moderator",
+            )
+            .unwrap();
+
+        let actor = service
+            .actor_permissions("user:2", TrustLevel::NewSeed)
+            .unwrap();
+        let capabilities = actor.effective_capabilities(None);
+
+        assert!(capabilities.contains(&Capability::parse_static("post.reply")));
+        assert!(capabilities.contains(&Capability::parse_static("post.edit.any")));
+    }
+
+    #[test]
+    fn permission_service_blocks_escalating_assignment() {
+        let service = PermissionService::new_in_memory([]);
+        service
+            .define_role(Role::new(
+                "role:limited",
+                "Limited",
+                [Capability::parse_static("user.warn")],
+            ))
+            .unwrap();
+        service
+            .define_role(Role::new(
+                "role:admin",
+                "Admin",
+                [Capability::parse_static("system.settings.write")],
+            ))
+            .unwrap();
+        service
+            .assign_global_role(
+                "user:root",
+                TrustLevel::NewSeed,
+                "user:actor",
+                "role:limited",
+            )
+            .unwrap_err();
+        service
+            .grant_global_role_for_bootstrap("user:actor", "role:limited")
+            .unwrap();
+
+        let err = service
+            .assign_global_role(
+                "user:actor",
+                TrustLevel::NewSeed,
+                "user:target",
+                "role:admin",
+            )
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            PermissionError::EscalatingRoleAssignment { missing } if missing == vec![Capability::parse_static("system.settings.write")]
+        ));
+    }
+
+    #[test]
+    fn permission_service_resolves_category_assignments_without_leaking() {
+        let service = PermissionService::new_in_memory([]);
+        service
+            .define_role(Role::new(
+                "role:category-moderator",
+                "Category Moderator",
+                [Capability::parse_static("topic.delete.any")],
+            ))
+            .unwrap();
+        service
+            .grant_global_role_for_bootstrap("user:admin", "role:category-moderator")
+            .unwrap();
+        service
+            .assign_category_role(
+                "user:admin",
+                TrustLevel::NewSeed,
+                "user:mod",
+                "category:1",
+                "role:category-moderator",
+            )
+            .unwrap();
+
+        let actor = service
+            .actor_permissions("user:mod", TrustLevel::NewSeed)
+            .unwrap();
+        let required = Capability::parse_static("topic.delete.any");
+
+        assert!(actor.allows(
+            &required,
+            &PermissionContext {
+                actor_id: "user:mod".to_owned(),
+                owner_id: Some("user:other".to_owned()),
+                category_id: Some("category:1".to_owned()),
+            }
+        ));
+        assert!(!actor.allows(
+            &required,
+            &PermissionContext {
+                actor_id: "user:mod".to_owned(),
+                owner_id: Some("user:other".to_owned()),
+                category_id: Some("category:2".to_owned()),
+            }
         ));
     }
 }

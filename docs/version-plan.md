@@ -129,6 +129,9 @@ Current preview:
 - Deterministic trust-level calculation from activity metrics.
 - Preview forum routes use the permission resolver for category creation,
   private reads, topic creation, replies, edits, and soft deletes.
+- In-memory permission service stores roles, default role grants, global user
+  role assignments, and category-scoped role assignments with escalation
+  prevention.
 
 Done when:
 

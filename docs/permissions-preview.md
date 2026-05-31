@@ -14,6 +14,8 @@ preview roles.
   category roles.
 - `PermissionContext` carries the actor, optional owner, and optional category
   being checked.
+- `PermissionService` stores preview roles, default roles, global user role
+  assignments, and category-scoped user role assignments.
 
 ## Current Rules
 
@@ -30,9 +32,12 @@ preview roles.
 - Forum preview routes check capabilities before creating categories, creating
   topics, replying, editing posts, deleting posts, deleting topics, or reading
   private categories.
+- Role assignment checks use the same resolver, so an actor cannot assign a
+  global or category-scoped role containing capabilities they do not already
+  hold.
 
 ## Current Limits
 
-The resolver is still backed by in-memory preview roles. Persistent role
-assignment, category inheritance, audited permission changes, and extractor or
+The resolver and role assignments are still in-memory. Persistent role
+assignment, audited permission changes, category inheritance, and extractor or
 middleware ergonomics come in follow-up `0.14.0` passes.
