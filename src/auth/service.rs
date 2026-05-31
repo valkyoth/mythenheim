@@ -87,10 +87,8 @@ impl AuthService {
         Self {
             inner: Arc::new(Mutex::new(AuthState {
                 next_user_id: 1,
-                dummy_password_hash: hash_password(
-                    "mythenheim dummy password for login timing equalization",
-                )
-                .expect("static dummy password satisfies password policy"),
+                dummy_password_hash: generate_dummy_password_hash()
+                    .expect("random dummy password material satisfies password policy"),
                 ..AuthState::default()
             })),
         }
@@ -388,23 +386,26 @@ fn token_error(err: SessionTokenError) -> AuthError {
     AuthError::Token(err.to_string())
 }
 
+fn generate_dummy_password_hash() -> Result<String, AuthError> {
+    let dummy_material = NewSessionToken::generate().map_err(token_error)?;
+    hash_password(dummy_material.secret()).map_err(AuthError::Password)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const PASSWORD: &str = "correct horse battery staple";
 
     #[test]
     fn register_login_authenticate_logout_flow() {
         let auth = AuthService::new_in_memory();
         let user = auth
-            .register("Eldryoth", "eldryoth@example.test", PASSWORD)
+            .register("Eldryoth", "eldryoth@example.test", &test_password())
             .unwrap();
 
         assert_eq!(user.username, "Eldryoth");
         assert_eq!(user.trust_level, 0);
 
-        let login = auth.login("eldryoth", PASSWORD).unwrap();
+        let login = auth.login("eldryoth", &test_password()).unwrap();
         assert_eq!(login.user.id, user.id);
 
         let current = auth.authenticate(&login.session_secret).unwrap();
@@ -421,10 +422,10 @@ mod tests {
     fn login_accepts_email() {
         let auth = AuthService::new_in_memory();
         let user = auth
-            .register("Member-1", "member@example.test", PASSWORD)
+            .register("Member-1", "member@example.test", &test_password())
             .unwrap();
 
-        let login = auth.login("MEMBER@example.test", PASSWORD).unwrap();
+        let login = auth.login("MEMBER@example.test", &test_password()).unwrap();
 
         assert_eq!(login.user.id, user.id);
     }
@@ -432,15 +433,15 @@ mod tests {
     #[test]
     fn duplicate_username_and_email_are_rejected() {
         let auth = AuthService::new_in_memory();
-        auth.register("Member", "member@example.test", PASSWORD)
+        auth.register("Member", "member@example.test", &test_password())
             .unwrap();
 
         assert!(matches!(
-            auth.register("member", "other@example.test", PASSWORD),
+            auth.register("member", "other@example.test", &test_password()),
             Err(AuthError::DuplicateUsername)
         ));
         assert!(matches!(
-            auth.register("Other", "MEMBER@example.test", PASSWORD),
+            auth.register("Other", "MEMBER@example.test", &test_password()),
             Err(AuthError::DuplicateEmail)
         ));
     }
@@ -448,11 +449,11 @@ mod tests {
     #[test]
     fn invalid_password_does_not_login() {
         let auth = AuthService::new_in_memory();
-        auth.register("Member", "member@example.test", PASSWORD)
+        auth.register("Member", "member@example.test", &test_password())
             .unwrap();
 
         assert!(matches!(
-            auth.login("member", "wrong horse battery staple"),
+            auth.login("member", &wrong_test_password()),
             Err(AuthError::InvalidCredentials)
         ));
     }
@@ -460,18 +461,18 @@ mod tests {
     #[test]
     fn repeated_failed_logins_are_rate_limited() {
         let auth = AuthService::new_in_memory();
-        auth.register("Member", "member@example.test", PASSWORD)
+        auth.register("Member", "member@example.test", &test_password())
             .unwrap();
 
         for _ in 0..LOGIN_FAILURE_LIMIT {
             assert!(matches!(
-                auth.login("member", "wrong horse battery staple"),
+                auth.login("member", &wrong_test_password()),
                 Err(AuthError::InvalidCredentials)
             ));
         }
 
         assert!(matches!(
-            auth.login("member", PASSWORD),
+            auth.login("member", &test_password()),
             Err(AuthError::LoginRateLimited { retry_after_secs })
                 if retry_after_secs > 0 && retry_after_secs <= LOGIN_LOCKOUT_SECS
         ));
@@ -483,13 +484,13 @@ mod tests {
 
         for _ in 0..LOGIN_FAILURE_LIMIT {
             assert!(matches!(
-                auth.login("missing-member", "wrong horse battery staple"),
+                auth.login("missing-member", &wrong_test_password()),
                 Err(AuthError::InvalidCredentials)
             ));
         }
 
         assert!(matches!(
-            auth.login("missing-member", "wrong horse battery staple"),
+            auth.login("missing-member", &wrong_test_password()),
             Err(AuthError::LoginRateLimited { retry_after_secs })
                 if retry_after_secs > 0 && retry_after_secs <= LOGIN_LOCKOUT_SECS
         ));
@@ -500,8 +501,9 @@ mod tests {
         let auth = AuthService::new_in_memory();
         let state = auth.inner.lock().unwrap();
 
-        assert!(verify_password(
-            "mythenheim dummy password for login timing equalization",
+        assert!(state.dummy_password_hash.starts_with("$argon2id$"));
+        assert!(!verify_password(
+            &test_password(),
             &state.dummy_password_hash
         ));
     }
@@ -509,30 +511,30 @@ mod tests {
     #[test]
     fn successful_login_clears_failed_attempts() {
         let auth = AuthService::new_in_memory();
-        auth.register("Member", "member@example.test", PASSWORD)
+        auth.register("Member", "member@example.test", &test_password())
             .unwrap();
 
         assert!(matches!(
-            auth.login("member", "wrong horse battery staple"),
+            auth.login("member", &wrong_test_password()),
             Err(AuthError::InvalidCredentials)
         ));
-        assert!(auth.login("member", PASSWORD).is_ok());
+        assert!(auth.login("member", &test_password()).is_ok());
 
         for _ in 1..LOGIN_FAILURE_LIMIT {
             assert!(matches!(
-                auth.login("member", "wrong horse battery staple"),
+                auth.login("member", &wrong_test_password()),
                 Err(AuthError::InvalidCredentials)
             ));
         }
-        assert!(auth.login("member", PASSWORD).is_ok());
+        assert!(auth.login("member", &test_password()).is_ok());
     }
 
     #[test]
     fn session_cookie_round_trips() {
         let auth = AuthService::new_in_memory();
-        auth.register("Member", "member@example.test", PASSWORD)
+        auth.register("Member", "member@example.test", &test_password())
             .unwrap();
-        let login = auth.login("member", PASSWORD).unwrap();
+        let login = auth.login("member", &test_password()).unwrap();
         let cookie = session_cookie(&login.session_secret, true);
         let header = format!("theme=dark; {cookie}; other=value");
 
@@ -543,5 +545,13 @@ mod tests {
         assert!(cookie.contains("HttpOnly"));
         assert!(cookie.contains("Secure"));
         assert!(cookie.contains("SameSite=Strict"));
+    }
+
+    fn test_password() -> String {
+        "a".repeat(32)
+    }
+
+    fn wrong_test_password() -> String {
+        "b".repeat(32)
     }
 }

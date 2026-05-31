@@ -119,7 +119,8 @@ mod tests {
 
     #[test]
     fn password_policy_rejects_short_passwords() {
-        let err = PasswordPolicy::default().validate("short").unwrap_err();
+        let password = "x".repeat(5);
+        let err = PasswordPolicy::default().validate(&password).unwrap_err();
 
         assert!(matches!(err, PasswordError::TooShort { .. }));
     }
@@ -134,28 +135,34 @@ mod tests {
 
     #[test]
     fn password_policy_rejects_nul_bytes() {
-        let err = PasswordPolicy::default()
-            .validate("valid-prefix\0valid-suffix")
-            .unwrap_err();
+        let mut password = "x".repeat(16);
+        password.push('\0');
+        password.push_str(&"y".repeat(16));
+        let err = PasswordPolicy::default().validate(&password).unwrap_err();
 
         assert_eq!(err, PasswordError::ContainsNul);
     }
 
     #[test]
     fn hashes_and_verifies_passwords() {
-        let password = "correct horse battery staple";
-        let hash = hash_password(password).unwrap();
+        let password = test_password();
+        let hash = hash_password(&password).unwrap();
 
         assert!(hash.starts_with("$argon2id$"));
-        assert!(verify_password(password, &hash));
-        assert!(!verify_password("wrong horse battery staple", &hash));
+        assert!(verify_password(&password, &hash));
+        assert!(!verify_password(&wrong_test_password(), &hash));
     }
 
     #[test]
     fn invalid_hash_does_not_verify() {
-        assert!(!verify_password(
-            "correct horse battery staple",
-            "not-a-phc-hash"
-        ));
+        assert!(!verify_password(&test_password(), "not-a-phc-hash"));
+    }
+
+    fn test_password() -> String {
+        "a".repeat(32)
+    }
+
+    fn wrong_test_password() -> String {
+        "b".repeat(32)
     }
 }
