@@ -52,6 +52,14 @@ pub struct Post {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PermissionTarget {
+    pub owner_id: String,
+    pub category_id: String,
+    pub topic_id: Option<String>,
+    pub is_first_post: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TopicDetail {
     pub topic: Topic,
     pub posts: Vec<Post>,
@@ -344,6 +352,46 @@ impl ForumService {
         Ok(post.public())
     }
 
+    pub fn topic_permission_target(&self, topic_id: &str) -> Result<PermissionTarget, ForumError> {
+        let state = self.inner.lock().map_err(|_| ForumError::StorePoisoned)?;
+        let topic = state
+            .topics
+            .get(topic_id)
+            .filter(|topic| !topic.deleted)
+            .ok_or(ForumError::TopicNotFound)?;
+        Ok(PermissionTarget {
+            owner_id: topic.author_id.clone(),
+            category_id: topic.category_id.clone(),
+            topic_id: Some(topic.id.clone()),
+            is_first_post: false,
+        })
+    }
+
+    pub fn post_permission_target(&self, post_id: &str) -> Result<PermissionTarget, ForumError> {
+        let state = self.inner.lock().map_err(|_| ForumError::StorePoisoned)?;
+        let post = state
+            .posts
+            .get(post_id)
+            .filter(|post| !post.deleted)
+            .ok_or(ForumError::PostNotFound)?;
+        let topic = state
+            .topics
+            .get(&post.topic_id)
+            .filter(|topic| !topic.deleted)
+            .ok_or(ForumError::TopicNotFound)?;
+        let is_first_post = state
+            .posts_by_topic
+            .get(&post.topic_id)
+            .and_then(|post_ids| post_ids.first())
+            .is_some_and(|first_post_id| first_post_id == post_id);
+        Ok(PermissionTarget {
+            owner_id: post.author_id.clone(),
+            category_id: topic.category_id.clone(),
+            topic_id: Some(post.topic_id.clone()),
+            is_first_post,
+        })
+    }
+
     pub fn reply(
         &self,
         topic_id: &str,
@@ -390,6 +438,18 @@ impl ForumService {
         actor_id: &str,
         content_raw: &str,
     ) -> Result<Post, ForumError> {
+        let target = self.post_permission_target(post_id)?;
+        if target.owner_id != actor_id {
+            return Err(ForumError::Forbidden);
+        }
+        self.edit_post_authorized(post_id, content_raw)
+    }
+
+    pub fn edit_post_authorized(
+        &self,
+        post_id: &str,
+        content_raw: &str,
+    ) -> Result<Post, ForumError> {
         let content_raw = clean_post_content(content_raw)?;
         let content_html = render_markdown_safe(&content_raw);
         let mut state = self.inner.lock().map_err(|_| ForumError::StorePoisoned)?;
@@ -398,9 +458,6 @@ impl ForumService {
             .get_mut(post_id)
             .filter(|post| !post.deleted)
             .ok_or(ForumError::PostNotFound)?;
-        if post.author_id != actor_id {
-            return Err(ForumError::Forbidden);
-        }
         post.content_raw = content_raw;
         post.content_html = content_html;
         post.revision = post.revision.saturating_add(1);
@@ -408,6 +465,14 @@ impl ForumService {
     }
 
     pub fn delete_post(&self, post_id: &str, actor_id: &str) -> Result<(), ForumError> {
+        let target = self.post_permission_target(post_id)?;
+        if target.owner_id != actor_id {
+            return Err(ForumError::Forbidden);
+        }
+        self.delete_post_authorized(post_id)
+    }
+
+    pub fn delete_post_authorized(&self, post_id: &str) -> Result<(), ForumError> {
         let mut state = self.inner.lock().map_err(|_| ForumError::StorePoisoned)?;
         let (topic_id, is_first_post) = {
             let post = state
@@ -415,9 +480,6 @@ impl ForumService {
                 .get(post_id)
                 .filter(|post| !post.deleted)
                 .ok_or(ForumError::PostNotFound)?;
-            if post.author_id != actor_id {
-                return Err(ForumError::Forbidden);
-            }
             let is_first_post = state
                 .posts_by_topic
                 .get(&post.topic_id)
@@ -427,7 +489,7 @@ impl ForumService {
         };
 
         if is_first_post {
-            self.delete_topic_locked(&mut state, &topic_id, actor_id)
+            self.delete_topic_locked(&mut state, &topic_id)
         } else {
             let post = state
                 .posts
@@ -442,24 +504,28 @@ impl ForumService {
     }
 
     pub fn delete_topic(&self, topic_id: &str, actor_id: &str) -> Result<(), ForumError> {
+        let target = self.topic_permission_target(topic_id)?;
+        if target.owner_id != actor_id {
+            return Err(ForumError::Forbidden);
+        }
+        self.delete_topic_authorized(topic_id)
+    }
+
+    pub fn delete_topic_authorized(&self, topic_id: &str) -> Result<(), ForumError> {
         let mut state = self.inner.lock().map_err(|_| ForumError::StorePoisoned)?;
-        self.delete_topic_locked(&mut state, topic_id, actor_id)
+        self.delete_topic_locked(&mut state, topic_id)
     }
 
     fn delete_topic_locked(
         &self,
         state: &mut ForumState,
         topic_id: &str,
-        actor_id: &str,
     ) -> Result<(), ForumError> {
         let topic = state
             .topics
             .get_mut(topic_id)
             .filter(|topic| !topic.deleted)
             .ok_or(ForumError::TopicNotFound)?;
-        if topic.author_id != actor_id {
-            return Err(ForumError::Forbidden);
-        }
         topic.deleted = true;
         topic.reply_count = 0;
         if let Some(post_ids) = state.posts_by_topic.get(topic_id) {

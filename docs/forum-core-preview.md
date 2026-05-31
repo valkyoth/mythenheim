@@ -42,7 +42,8 @@ capabilities.
 - Empty titles, empty post content, NUL bytes, and oversized post bodies are
   rejected.
 - Owner-only edit/delete checks are temporary 0.13 primitives. The 0.14
-  RBAC/ABAC milestone replaces them with capability-aware authorization.
+  RBAC/ABAC milestone layers capability-aware authorization over these
+  primitives.
 
 ## Current Limits
 

@@ -21,6 +21,7 @@ use mythenheim::{
         Category, CategoryNode, DEFAULT_PAGE_SIZE, ForumError, ForumService, Post, Topic,
         TopicDetail,
     },
+    permissions::{ActorPermissions, Capability, PermissionContext, Role, TrustLevel},
 };
 use serde::{Deserialize, Serialize};
 use std::{net::SocketAddr, path::PathBuf};
@@ -52,6 +53,7 @@ struct HealthResponse {
 struct AppState {
     auth: AuthService,
     forum: ForumService,
+    default_roles: Vec<Role>,
     secure_cookies: bool,
 }
 
@@ -212,6 +214,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             AppState {
                 auth: AuthService::new_in_memory(),
                 forum: ForumService::new_in_memory(),
+                default_roles: preview_default_roles(),
                 secure_cookies,
             },
             max_request_body_bytes as usize,
@@ -227,6 +230,7 @@ fn app() -> Router {
         AppState {
             auth: AuthService::new_in_memory(),
             forum: ForumService::new_in_memory(),
+            default_roles: preview_default_roles(),
             secure_cookies: true,
         },
         1_048_576,
@@ -325,7 +329,7 @@ async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
 }
 
 async fn list_categories(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let can_read_private = authenticated_user(&state, &headers).is_some();
+    let can_read_private = can_read_private_categories(&state, &headers);
     match state.forum.list_categories_for(can_read_private) {
         Ok(categories) => Json(CategoriesResponse {
             categories: categories.into_iter().map(CategoryResponse::from).collect(),
@@ -336,7 +340,7 @@ async fn list_categories(State(state): State<AppState>, headers: HeaderMap) -> R
 }
 
 async fn category_tree(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let can_read_private = authenticated_user(&state, &headers).is_some();
+    let can_read_private = can_read_private_categories(&state, &headers);
     match state.forum.category_tree_for(can_read_private) {
         Ok(categories) => Json(CategoryTreeResponse {
             categories: categories
@@ -354,8 +358,11 @@ async fn create_category(
     headers: HeaderMap,
     Json(payload): Json<CreateCategoryRequest>,
 ) -> Response {
-    if authenticated_user(&state, &headers).is_none() {
+    let Some(user) = authenticated_user(&state, &headers) else {
         return auth_error_response(AuthError::InvalidSession);
+    };
+    if !has_capability(&state, &user, "category.create", None, None) {
+        return forum_error_response(ForumError::Forbidden);
     }
 
     match state.forum.create_category(
@@ -377,7 +384,7 @@ async fn list_topics(
     axum::extract::Path(category_id): axum::extract::Path<String>,
     Query(query): Query<ListTopicsQuery>,
 ) -> Response {
-    let can_read_private = authenticated_user(&state, &headers).is_some();
+    let can_read_private = can_read_private_categories(&state, &headers);
     match state.forum.list_topics(
         &category_id,
         query.page.unwrap_or(1),
@@ -401,6 +408,9 @@ async fn create_topic(
     let Some(user) = authenticated_user(&state, &headers) else {
         return auth_error_response(AuthError::InvalidSession);
     };
+    if !has_capability(&state, &user, "topic.create", None, Some(&category_id)) {
+        return forum_error_response(ForumError::Forbidden);
+    }
 
     match state
         .forum
@@ -416,7 +426,7 @@ async fn get_topic(
     headers: HeaderMap,
     axum::extract::Path(topic_id): axum::extract::Path<String>,
 ) -> Response {
-    let can_read_private = authenticated_user(&state, &headers).is_some();
+    let can_read_private = can_read_private_categories(&state, &headers);
     match state.forum.get_topic(&topic_id, can_read_private) {
         Ok(topic) => Json(TopicDetailResponse::from(topic)).into_response(),
         Err(err) => forum_error_response(err),
@@ -432,6 +442,18 @@ async fn create_post(
     let Some(user) = authenticated_user(&state, &headers) else {
         return auth_error_response(AuthError::InvalidSession);
     };
+    let Ok(topic_target) = state.forum.topic_permission_target(&topic_id) else {
+        return forum_error_response(ForumError::TopicNotFound);
+    };
+    if !has_capability(
+        &state,
+        &user,
+        "post.reply",
+        None,
+        Some(&topic_target.category_id),
+    ) {
+        return forum_error_response(ForumError::Forbidden);
+    }
 
     match state.forum.reply(&topic_id, &user.id, &payload.content) {
         Ok(post) => (StatusCode::CREATED, Json(PostResponse::from(post))).into_response(),
@@ -444,7 +466,7 @@ async fn get_post(
     headers: HeaderMap,
     axum::extract::Path(post_id): axum::extract::Path<String>,
 ) -> Response {
-    let can_read_private = authenticated_user(&state, &headers).is_some();
+    let can_read_private = can_read_private_categories(&state, &headers);
     match state.forum.get_post(&post_id, can_read_private) {
         Ok(post) => Json(PostResponse::from(post)).into_response(),
         Err(err) => forum_error_response(err),
@@ -460,8 +482,21 @@ async fn edit_post(
     let Some(user) = authenticated_user(&state, &headers) else {
         return auth_error_response(AuthError::InvalidSession);
     };
+    let target = match state.forum.post_permission_target(&post_id) {
+        Ok(target) => target,
+        Err(err) => return forum_error_response(err),
+    };
+    if !has_capability(
+        &state,
+        &user,
+        "post.edit.own",
+        Some(&target.owner_id),
+        Some(&target.category_id),
+    ) {
+        return forum_error_response(ForumError::Forbidden);
+    }
 
-    match state.forum.edit_post(&post_id, &user.id, &payload.content) {
+    match state.forum.edit_post_authorized(&post_id, &payload.content) {
         Ok(post) => Json(PostResponse::from(post)).into_response(),
         Err(err) => forum_error_response(err),
     }
@@ -475,8 +510,26 @@ async fn delete_post(
     let Some(user) = authenticated_user(&state, &headers) else {
         return auth_error_response(AuthError::InvalidSession);
     };
+    let target = match state.forum.post_permission_target(&post_id) {
+        Ok(target) => target,
+        Err(err) => return forum_error_response(err),
+    };
+    let required = if target.is_first_post {
+        "topic.delete.own"
+    } else {
+        "post.delete.own"
+    };
+    if !has_capability(
+        &state,
+        &user,
+        required,
+        Some(&target.owner_id),
+        Some(&target.category_id),
+    ) {
+        return forum_error_response(ForumError::Forbidden);
+    }
 
-    match state.forum.delete_post(&post_id, &user.id) {
+    match state.forum.delete_post_authorized(&post_id) {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(err) => forum_error_response(err),
     }
@@ -490,8 +543,21 @@ async fn delete_topic(
     let Some(user) = authenticated_user(&state, &headers) else {
         return auth_error_response(AuthError::InvalidSession);
     };
+    let target = match state.forum.topic_permission_target(&topic_id) {
+        Ok(target) => target,
+        Err(err) => return forum_error_response(err),
+    };
+    if !has_capability(
+        &state,
+        &user,
+        "topic.delete.own",
+        Some(&target.owner_id),
+        Some(&target.category_id),
+    ) {
+        return forum_error_response(ForumError::Forbidden);
+    }
 
-    match state.forum.delete_topic(&topic_id, &user.id) {
+    match state.forum.delete_topic_authorized(&topic_id) {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(err) => forum_error_response(err),
     }
@@ -500,6 +566,54 @@ async fn delete_topic(
 fn authenticated_user(state: &AppState, headers: &HeaderMap) -> Option<PublicUser> {
     let session_secret = session_secret_from_headers(headers)?;
     state.auth.authenticate(&session_secret).ok()
+}
+
+fn can_read_private_categories(state: &AppState, headers: &HeaderMap) -> bool {
+    authenticated_user(state, headers)
+        .is_some_and(|user| has_capability(state, &user, "category.read.private", None, None))
+}
+
+fn has_capability(
+    state: &AppState,
+    user: &PublicUser,
+    capability: &'static str,
+    owner_id: Option<&str>,
+    category_id: Option<&str>,
+) -> bool {
+    let actor = actor_permissions(state, user);
+    actor.allows(
+        &Capability::parse_static(capability),
+        &PermissionContext {
+            actor_id: user.id.clone(),
+            owner_id: owner_id.map(ToOwned::to_owned),
+            category_id: category_id.map(ToOwned::to_owned),
+        },
+    )
+}
+
+fn actor_permissions(state: &AppState, user: &PublicUser) -> ActorPermissions {
+    ActorPermissions {
+        actor_id: user.id.clone(),
+        trust_level: TrustLevel::from_u8(user.trust_level),
+        global_roles: state.default_roles.clone(),
+        category_roles: vec![],
+    }
+}
+
+fn preview_default_roles() -> Vec<Role> {
+    vec![Role::new(
+        "role:preview-member",
+        "Preview Member",
+        [
+            Capability::parse_static("category.create"),
+            Capability::parse_static("category.read.private"),
+            Capability::parse_static("topic.create"),
+            Capability::parse_static("topic.delete.own"),
+            Capability::parse_static("post.reply"),
+            Capability::parse_static("post.edit.own"),
+            Capability::parse_static("post.delete.own"),
+        ],
+    )]
 }
 
 fn session_secret_from_headers(headers: &HeaderMap) -> Option<String> {
@@ -831,6 +945,7 @@ mod tests {
             AppState {
                 auth: AuthService::new_in_memory(),
                 forum: ForumService::new_in_memory(),
+                default_roles: preview_default_roles(),
                 secure_cookies: false,
             },
             32,
@@ -879,6 +994,75 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn forum_write_routes_require_capabilities() {
+        let app = app_with_state(
+            AppState {
+                auth: AuthService::new_in_memory(),
+                forum: ForumService::new_in_memory(),
+                default_roles: vec![],
+                secure_cookies: true,
+            },
+            1_048_576,
+        );
+        let cookie = register_and_login(&app).await;
+
+        let response = app
+            .oneshot(json_request_with_cookie(
+                "/api/v1/categories",
+                &cookie,
+                json!({
+                    "name": "No Permission"
+                }),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn private_category_reads_require_private_read_capability() {
+        let forum = ForumService::new_in_memory();
+        forum
+            .create_category("Staff", Some("Private"), None, true)
+            .unwrap();
+        let app = app_with_state(
+            AppState {
+                auth: AuthService::new_in_memory(),
+                forum,
+                default_roles: vec![Role::new(
+                    "role:no-private-read",
+                    "No Private Read",
+                    [Capability::parse_static("category.create")],
+                )],
+                secure_cookies: true,
+            },
+            1_048_576,
+        );
+        let cookie = register_and_login(&app).await;
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/categories")
+                    .header(COOKIE, cookie.as_str())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            body_json(response).await["categories"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
     }
 
     #[tokio::test]

@@ -127,6 +127,8 @@ Current preview:
   global roles, category-scoped roles, ownership checks, and assignment
   escalation prevention.
 - Deterministic trust-level calculation from activity metrics.
+- Preview forum routes use the permission resolver for category creation,
+  private reads, topic creation, replies, edits, and soft deletes.
 
 Done when:
 
