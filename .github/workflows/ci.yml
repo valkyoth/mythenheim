@@ -64,3 +64,43 @@ jobs:
 
       - name: Check RustSec advisories
         run: cargo audit
+
+  portable-binary:
+    name: Binary portability (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux native
+            os: ubuntu-latest
+            rust-target: ""
+            command: cargo test --locked
+          - name: Windows native
+            os: windows-latest
+            rust-target: ""
+            command: cargo test --locked
+          - name: macOS native
+            os: macos-latest
+            rust-target: ""
+            command: cargo test --locked
+          - name: FreeBSD target
+            os: ubuntu-latest
+            rust-target: x86_64-unknown-freebsd
+            command: cargo check --locked --target x86_64-unknown-freebsd --all-targets
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Install Rust target
+        if: matrix.rust-target != ''
+        run: rustup target add ${{ matrix.rust-target }}
+
+      - name: Check portable binary
+        run: ${{ matrix.command }}

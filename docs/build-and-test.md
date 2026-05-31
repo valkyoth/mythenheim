@@ -35,6 +35,24 @@ starts the HTTP server on a local port, calls `/healthz`, and exercises the
 preview register/login/current-user/logout flow plus category/topic/reply
 creation.
 
+## Binary Portability
+
+Mythenheim targets Linux, BSD, Windows, and macOS for direct compiled-binary
+deployments. CI runs native Rust tests on Linux, Windows, and macOS, plus a
+FreeBSD target compile check from Linux.
+
+Local target checks can be run with:
+
+```sh
+cargo test --locked
+rustup target add x86_64-unknown-freebsd
+cargo check --locked --target x86_64-unknown-freebsd --all-targets
+```
+
+The shell smoke scripts and Podman checks are Linux-oriented. They protect the
+container/proxy deployment path but are not required for the binary to start on
+Windows, macOS, or BSD.
+
 ## SurrealDB Migration Smoke
 
 ```sh

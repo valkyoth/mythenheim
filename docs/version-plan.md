@@ -26,12 +26,15 @@ Scope:
 - Safe Markdown rendering primitive with XSS tests.
 - Capability string validation.
 - GitHub CI, check script, release metadata validation, doc link validation.
+- Binary portability CI for Linux, Windows, macOS, and a FreeBSD target check.
 - Rootless Podman SurrealDB test helper.
 - Fluxheim proxy notes and Wolfi reverse-proxy smoke fixture.
 
 Done when:
 
 - `scripts/checks.sh` passes.
+- Native Linux, Windows, and macOS Rust tests pass in CI.
+- FreeBSD target compile check passes in CI.
 - `cargo deny check` and `cargo audit` are runnable in CI.
 - `scripts/smoke_local.sh` passes.
 - Fluxheim Wolfi can proxy `Host: mythenheim.eu` to Mythenheim `/healthz`.
@@ -247,6 +250,7 @@ Stable scope:
 - Search, read state, watched content, notifications.
 - Attachments with strict validation.
 - Rootless Podman deployment and direct compiled binary deployment.
+- Direct compiled binary support for Linux, BSD, Windows, and macOS.
 - Fluxheim reverse-proxy compatibility.
 - OpenTelemetry tracing and metrics with Prometheus and Jaeger/OTLP smoke tests.
 
@@ -254,6 +258,8 @@ Done when:
 
 - Full release checklist passes.
 - Podman and direct binary smoke tests pass.
+- Binary portability CI passes for Linux, Windows, macOS, and FreeBSD target
+  compilation, with native BSD smoke results documented before stable release.
 - SurrealDB integration tests pass from a random rootless port.
 - Fluxheim Wolfi reverse-proxy smoke passes for `mythenheim.eu` and
   `dev.mythenheim.eu`.

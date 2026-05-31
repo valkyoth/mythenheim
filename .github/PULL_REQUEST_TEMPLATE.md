@@ -24,6 +24,7 @@ Describe what changed and why.
 - [ ] I ran `perl scripts/check-doc-links.pl` when docs changed.
 - [ ] I ran `cargo clippy --all-targets -- -D warnings`.
 - [ ] I ran `cargo test`.
+- [ ] I considered Linux/BSD/Windows/macOS binary portability for runtime changes.
 - [ ] I ran `scripts/smoke_local.sh` for config or CLI changes.
 - [ ] I ran `scripts/smoke_fluxheim_wolfi.sh` for Fluxheim/proxy/container changes.
 - [ ] I checked dependency/license impact when adding or updating crates.

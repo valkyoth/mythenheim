@@ -28,6 +28,11 @@ the durable workflows expected from mature forum communities while keeping a
 stricter execution boundary: Rust core, SurrealDB storage, rootless Podman
 operation, and sandboxed extension points.
 
+The compiled Mythenheim binary is intended to target Linux, BSD, Windows, and
+macOS. Linux remains the container and rootless Podman target, while direct
+binary deployments should stay portable across the supported operating-system
+families.
+
 The project started at `0.10.0` and is currently `0.12.0`. Releases before
 `1.0.0` are incubator releases: every version has tests and docs, but public
 APIs and database schema can still change. `1.0.0` is the first stable
@@ -54,6 +59,7 @@ Local development origin on this machine, when DNS/proxying is needed:
 - Fluxheim-inspired checks: format, clippy, tests, release metadata, doc links.
 - Rootless Podman helper that starts SurrealDB on a random local port for tests.
 - Fluxheim Wolfi reverse-proxy smoke fixture.
+- Binary portability CI for Linux, Windows, macOS, and a FreeBSD target check.
 - Versioned roadmap from `0.10.0` through `1.0.0` and later `1.x`.
 
 ## Architecture Direction
@@ -66,6 +72,7 @@ Mythenheim is API-first and deployment-conscious:
 - Server-side content parsing and sanitization.
 - Capability-based permissions with contextual ownership checks.
 - Rootless Podman and direct compiled-binary deployment.
+- Direct binary portability across Linux, BSD, Windows, and macOS.
 - Fluxheim reverse-proxy compatibility for `mythenheim.eu` and
   `dev.mythenheim.eu`.
 - OpenTelemetry and Prometheus planned before `1.0.0`.
@@ -134,6 +141,7 @@ and `dev.mythenheim.eu` through the proxy.
 - [Build and test guide](docs/build-and-test.md)
 - [Authentication and session plan](docs/auth-session-plan.md)
 - [Forum core preview](docs/forum-core-preview.md)
+- [Platform support](docs/platform-support.md)
 - [Rootless SurrealDB testing](docs/surrealdb-test-podman.md)
 - [Fluxheim proxy deployment](docs/fluxheim-proxy.md)
 - [Observability plan](docs/observability.md)
@@ -147,8 +155,8 @@ and `dev.mythenheim.eu` through the proxy.
 - Public issues use structured templates under `.github/ISSUE_TEMPLATE`.
 - Dependabot checks Rust and GitHub Actions weekly.
 - CI runs formatting, release metadata validation, doc link checks, clippy,
-  tests, reduced feature builds, local smoke, dependency policy, and advisory
-  checks.
+  tests, reduced feature builds, local smoke, binary portability checks,
+  dependency policy, and advisory checks.
 - Container image builds are handled by `.github/workflows/container.yml`.
 - The expensive Fluxheim Wolfi proxy smoke is manual through
   `.github/workflows/fluxheim-wolfi-smoke.yml`.
