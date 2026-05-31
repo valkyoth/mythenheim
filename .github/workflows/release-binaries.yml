@@ -69,7 +69,7 @@ jobs:
           python scripts/build_release_binary.py "${args[@]}"
 
       - name: Upload release binary artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
           path: target/release-binaries/*
