@@ -121,6 +121,13 @@ Scope:
 - Trust levels TL0 through TL3.
 - Role assignment escalation prevention.
 
+Current preview:
+
+- Pure Rust permission resolver for capability strings, trust-level grants,
+  global roles, category-scoped roles, ownership checks, and assignment
+  escalation prevention.
+- Deterministic trust-level calculation from activity metrics.
+
 Done when:
 
 - Tests prove actors cannot grant capabilities they do not hold.

@@ -50,6 +50,8 @@ Local development origin on this machine, when DNS/proxying is needed:
 - TOML config loader and validator.
 - Safe Markdown preview renderer backed by `pulldown-cmark` and `ammonia`.
 - Capability string validator for the RBAC/ABAC permission plan.
+- Preview RBAC/ABAC permission resolver with trust-level grants, scoped roles,
+  ownership checks, and role-assignment escalation prevention.
 - Password hashing, opaque session-token primitives, preview auth routes, and
   login lockout hooks.
 - Preview category/topic/post API with nested category reads, private
@@ -149,6 +151,7 @@ and `dev.mythenheim.eu` through the proxy.
 - [Build and test guide](docs/build-and-test.md)
 - [Authentication and session plan](docs/auth-session-plan.md)
 - [Forum core preview](docs/forum-core-preview.md)
+- [Permissions preview](docs/permissions-preview.md)
 - [Platform support](docs/platform-support.md)
 - [Release binary builds](docs/release-binaries.md)
 - [Rootless SurrealDB testing](docs/surrealdb-test-podman.md)
