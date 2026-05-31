@@ -11,21 +11,34 @@ sanitization before SurrealDB persistence is wired in.
 - `GET /api/v1/categories/{category_id}/topics`
 - `POST /api/v1/categories/{category_id}/topics`
 - `GET /api/v1/topics/{topic_id}`
+- `DELETE /api/v1/topics/{topic_id}`
 - `POST /api/v1/topics/{topic_id}/posts`
+- `PATCH /api/v1/posts/{post_id}`
+- `DELETE /api/v1/posts/{post_id}`
 
-Write routes require the current opaque session cookie. Read routes are public
-for now. Category administration permissions move into the RBAC/ABAC milestone.
+Write routes require the current opaque session cookie. Public categories and
+topics can be read anonymously. Private categories and their topics require a
+valid session for reads until the RBAC/ABAC milestone adds granular category
+capabilities.
 
 ## Behavior
 
 - Category and topic slugs are generated from titles and made unique.
+- Categories can be public or private and can have parents.
 - Topic creation creates the first post.
+- Topic lists accept `page` and `page_size` query parameters.
 - Replies increment topic `reply_count`.
 - Posts store both raw Markdown and sanitized HTML.
+- Post edits re-render sanitized HTML and increment `revision`.
+- Deleting a reply soft-deletes that post and decrements `reply_count`.
+- Deleting a topic, or deleting its first post, soft-deletes the topic and its
+  posts.
 - Raw HTML events are dropped before rendering, then generated HTML is passed
   through `ammonia`.
 - Empty titles, empty post content, NUL bytes, and oversized post bodies are
   rejected.
+- Owner-only edit/delete checks are temporary 0.13 primitives. The 0.14
+  RBAC/ABAC milestone replaces them with capability-aware authorization.
 
 ## Current Limits
 

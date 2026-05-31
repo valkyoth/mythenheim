@@ -9,6 +9,7 @@ pub const MAX_CATEGORY_NAME_LEN: usize = 80;
 pub const MAX_TOPIC_TITLE_LEN: usize = 160;
 pub const MAX_POST_CONTENT_BYTES: usize = 65_536;
 pub const DEFAULT_PAGE_SIZE: usize = 25;
+pub const MAX_PAGE_SIZE: usize = 100;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Category {
@@ -18,6 +19,7 @@ pub struct Category {
     pub description: Option<String>,
     pub parent_id: Option<String>,
     pub is_locked: bool,
+    pub is_private: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,6 +61,7 @@ pub enum ForumError {
     PostNotFound,
     CategoryLocked,
     TopicLocked,
+    Forbidden,
     StorePoisoned,
 }
 
@@ -89,6 +92,7 @@ struct StoredCategory {
     description: Option<String>,
     parent_id: Option<String>,
     is_locked: bool,
+    is_private: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -131,6 +135,7 @@ impl ForumService {
         name: &str,
         description: Option<&str>,
         parent_id: Option<&str>,
+        is_private: bool,
     ) -> Result<Category, ForumError> {
         let name = clean_required_text(name, MAX_CATEGORY_NAME_LEN)
             .ok_or(ForumError::InvalidCategoryName)?;
@@ -154,6 +159,7 @@ impl ForumService {
             description,
             parent_id: parent_id.map(ToOwned::to_owned),
             is_locked: false,
+            is_private,
         };
         let public = category.public();
 
@@ -164,10 +170,15 @@ impl ForumService {
     }
 
     pub fn list_categories(&self) -> Result<Vec<Category>, ForumError> {
+        self.list_categories_for(false)
+    }
+
+    pub fn list_categories_for(&self, can_read_private: bool) -> Result<Vec<Category>, ForumError> {
         let state = self.inner.lock().map_err(|_| ForumError::StorePoisoned)?;
         let mut categories = state
             .categories
             .values()
+            .filter(|category| can_read_private || !category_is_private(&state, &category.id))
             .map(StoredCategory::public)
             .collect::<Vec<_>>();
         categories.sort_by(|left, right| left.id.cmp(&right.id));
@@ -246,11 +257,16 @@ impl ForumService {
         category_id: &str,
         page: usize,
         page_size: usize,
+        can_read_private: bool,
     ) -> Result<Vec<Topic>, ForumError> {
         let state = self.inner.lock().map_err(|_| ForumError::StorePoisoned)?;
         if !state.categories.contains_key(category_id) {
             return Err(ForumError::CategoryNotFound);
         }
+        if !can_read_private && category_is_private(&state, category_id) {
+            return Err(ForumError::CategoryNotFound);
+        }
+        let page_size = page_size.clamp(1, MAX_PAGE_SIZE);
         let start = page.saturating_sub(1).saturating_mul(page_size);
         let topics = state
             .topics_by_category
@@ -266,13 +282,20 @@ impl ForumService {
         Ok(topics)
     }
 
-    pub fn get_topic(&self, topic_id: &str) -> Result<TopicDetail, ForumError> {
+    pub fn get_topic(
+        &self,
+        topic_id: &str,
+        can_read_private: bool,
+    ) -> Result<TopicDetail, ForumError> {
         let state = self.inner.lock().map_err(|_| ForumError::StorePoisoned)?;
         let topic = state
             .topics
             .get(topic_id)
             .filter(|topic| !topic.deleted)
             .ok_or(ForumError::TopicNotFound)?;
+        if !can_read_private && category_is_private(&state, &topic.category_id) {
+            return Err(ForumError::TopicNotFound);
+        }
         let posts = state
             .posts_by_topic
             .get(topic_id)
@@ -328,6 +351,94 @@ impl ForumService {
 
         Ok(post.public())
     }
+
+    pub fn edit_post(
+        &self,
+        post_id: &str,
+        actor_id: &str,
+        content_raw: &str,
+    ) -> Result<Post, ForumError> {
+        let content_raw = clean_post_content(content_raw)?;
+        let content_html = render_markdown_safe(&content_raw);
+        let mut state = self.inner.lock().map_err(|_| ForumError::StorePoisoned)?;
+        let post = state
+            .posts
+            .get_mut(post_id)
+            .filter(|post| !post.deleted)
+            .ok_or(ForumError::PostNotFound)?;
+        if post.author_id != actor_id {
+            return Err(ForumError::Forbidden);
+        }
+        post.content_raw = content_raw;
+        post.content_html = content_html;
+        post.revision = post.revision.saturating_add(1);
+        Ok(post.public())
+    }
+
+    pub fn delete_post(&self, post_id: &str, actor_id: &str) -> Result<(), ForumError> {
+        let mut state = self.inner.lock().map_err(|_| ForumError::StorePoisoned)?;
+        let (topic_id, is_first_post) = {
+            let post = state
+                .posts
+                .get(post_id)
+                .filter(|post| !post.deleted)
+                .ok_or(ForumError::PostNotFound)?;
+            if post.author_id != actor_id {
+                return Err(ForumError::Forbidden);
+            }
+            let is_first_post = state
+                .posts_by_topic
+                .get(&post.topic_id)
+                .and_then(|post_ids| post_ids.first())
+                .is_some_and(|first_post_id| first_post_id == post_id);
+            (post.topic_id.clone(), is_first_post)
+        };
+
+        if is_first_post {
+            self.delete_topic_locked(&mut state, &topic_id, actor_id)
+        } else {
+            let post = state
+                .posts
+                .get_mut(post_id)
+                .ok_or(ForumError::PostNotFound)?;
+            post.deleted = true;
+            if let Some(topic) = state.topics.get_mut(&topic_id) {
+                topic.reply_count = topic.reply_count.saturating_sub(1);
+            }
+            Ok(())
+        }
+    }
+
+    pub fn delete_topic(&self, topic_id: &str, actor_id: &str) -> Result<(), ForumError> {
+        let mut state = self.inner.lock().map_err(|_| ForumError::StorePoisoned)?;
+        self.delete_topic_locked(&mut state, topic_id, actor_id)
+    }
+
+    fn delete_topic_locked(
+        &self,
+        state: &mut ForumState,
+        topic_id: &str,
+        actor_id: &str,
+    ) -> Result<(), ForumError> {
+        let topic = state
+            .topics
+            .get_mut(topic_id)
+            .filter(|topic| !topic.deleted)
+            .ok_or(ForumError::TopicNotFound)?;
+        if topic.author_id != actor_id {
+            return Err(ForumError::Forbidden);
+        }
+        topic.deleted = true;
+        topic.reply_count = 0;
+        if let Some(post_ids) = state.posts_by_topic.get(topic_id) {
+            for post_id in post_ids {
+                if let Some(post) = state.posts.get_mut(post_id) {
+                    post.deleted = true;
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Default for ForumService {
@@ -345,6 +456,7 @@ impl StoredCategory {
             description: self.description.clone(),
             parent_id: self.parent_id.clone(),
             is_locked: self.is_locked,
+            is_private: self.is_private,
         }
     }
 }
@@ -389,6 +501,7 @@ impl fmt::Display for ForumError {
             Self::PostNotFound => formatter.write_str("post not found"),
             Self::CategoryLocked => formatter.write_str("category is locked"),
             Self::TopicLocked => formatter.write_str("topic is locked"),
+            Self::Forbidden => formatter.write_str("forbidden"),
             Self::StorePoisoned => formatter.write_str("forum store lock is poisoned"),
         }
     }
@@ -440,6 +553,20 @@ fn unique_topic_slug(category_id: &str, value: &str, index: &HashMap<String, Str
     slug
 }
 
+fn category_is_private(state: &ForumState, category_id: &str) -> bool {
+    let mut current = Some(category_id);
+    while let Some(id) = current {
+        let Some(category) = state.categories.get(id) else {
+            return false;
+        };
+        if category.is_private {
+            return true;
+        }
+        current = category.parent_id.as_deref();
+    }
+    false
+}
+
 fn slugify(value: &str) -> String {
     let mut slug = String::new();
     let mut previous_dash = false;
@@ -473,7 +600,7 @@ mod tests {
     fn creates_category_topic_and_reply() {
         let forum = ForumService::new_in_memory();
         let category = forum
-            .create_category("General Talk", Some("Community topics"), None)
+            .create_category("General Talk", Some("Community topics"), None, false)
             .unwrap();
         let topic = forum
             .create_topic(
@@ -495,7 +622,7 @@ mod tests {
         let reply = forum.reply(&topic.topic.id, AUTHOR, "safe reply").unwrap();
         assert_eq!(reply.revision, 1);
 
-        let loaded = forum.get_topic(&topic.topic.id).unwrap();
+        let loaded = forum.get_topic(&topic.topic.id, false).unwrap();
         assert_eq!(loaded.topic.reply_count, 1);
         assert_eq!(loaded.posts.len(), 2);
     }
@@ -503,15 +630,15 @@ mod tests {
     #[test]
     fn list_topics_paginates_by_category() {
         let forum = ForumService::new_in_memory();
-        let category = forum.create_category("General", None, None).unwrap();
+        let category = forum.create_category("General", None, None, false).unwrap();
         for index in 0..3 {
             forum
                 .create_topic(&category.id, AUTHOR, &format!("Topic {index}"), "body")
                 .unwrap();
         }
 
-        let first_page = forum.list_topics(&category.id, 1, 2).unwrap();
-        let second_page = forum.list_topics(&category.id, 2, 2).unwrap();
+        let first_page = forum.list_topics(&category.id, 1, 2, false).unwrap();
+        let second_page = forum.list_topics(&category.id, 2, 2, false).unwrap();
 
         assert_eq!(first_page.len(), 2);
         assert_eq!(second_page.len(), 1);
@@ -520,8 +647,8 @@ mod tests {
     #[test]
     fn slugs_are_unique() {
         let forum = ForumService::new_in_memory();
-        let first = forum.create_category("General", None, None).unwrap();
-        let second = forum.create_category("General", None, None).unwrap();
+        let first = forum.create_category("General", None, None, false).unwrap();
+        let second = forum.create_category("General", None, None, false).unwrap();
 
         assert_eq!(first.slug, "general");
         assert_eq!(second.slug, "general-2");
@@ -530,7 +657,7 @@ mod tests {
     #[test]
     fn rejects_empty_and_oversized_content() {
         let forum = ForumService::new_in_memory();
-        let category = forum.create_category("General", None, None).unwrap();
+        let category = forum.create_category("General", None, None, false).unwrap();
 
         assert!(matches!(
             forum.create_topic(&category.id, AUTHOR, "Title", "   "),
@@ -545,7 +672,7 @@ mod tests {
     #[test]
     fn renders_sanitized_post_html() {
         let forum = ForumService::new_in_memory();
-        let category = forum.create_category("General", None, None).unwrap();
+        let category = forum.create_category("General", None, None, false).unwrap();
         let topic = forum
             .create_topic(
                 &category.id,
@@ -559,5 +686,81 @@ mod tests {
         assert!(!html.contains("<script"));
         assert!(!html.contains("javascript:"));
         assert!(html.contains("bad"));
+    }
+
+    #[test]
+    fn private_categories_require_authenticated_read() {
+        let forum = ForumService::new_in_memory();
+        let category = forum
+            .create_category("Staff", Some("Private"), None, true)
+            .unwrap();
+        let topic = forum
+            .create_topic(&category.id, AUTHOR, "Staff Topic", "private body")
+            .unwrap();
+
+        assert!(forum.list_categories().unwrap().is_empty());
+        assert_eq!(forum.list_categories_for(true).unwrap().len(), 1);
+        assert!(matches!(
+            forum.list_topics(&category.id, 1, 25, false),
+            Err(ForumError::CategoryNotFound)
+        ));
+        assert_eq!(
+            forum.list_topics(&category.id, 1, 25, true).unwrap().len(),
+            1
+        );
+        assert!(matches!(
+            forum.get_topic(&topic.topic.id, false),
+            Err(ForumError::TopicNotFound)
+        ));
+        assert!(forum.get_topic(&topic.topic.id, true).is_ok());
+    }
+
+    #[test]
+    fn edits_posts_and_tracks_revisions() {
+        let forum = ForumService::new_in_memory();
+        let category = forum.create_category("General", None, None, false).unwrap();
+        let topic = forum
+            .create_topic(&category.id, AUTHOR, "Editable", "original")
+            .unwrap();
+        let post_id = &topic.posts[0].id;
+
+        let edited = forum
+            .edit_post(post_id, AUTHOR, "edited **content**")
+            .unwrap();
+
+        assert_eq!(edited.revision, 2);
+        assert_eq!(edited.content_raw, "edited **content**");
+        assert!(edited.content_html.contains("<strong>content</strong>"));
+        assert!(matches!(
+            forum.edit_post(post_id, "user:other", "not yours"),
+            Err(ForumError::Forbidden)
+        ));
+    }
+
+    #[test]
+    fn soft_deletes_posts_and_topics() {
+        let forum = ForumService::new_in_memory();
+        let category = forum.create_category("General", None, None, false).unwrap();
+        let topic = forum
+            .create_topic(&category.id, AUTHOR, "Delete Me", "first")
+            .unwrap();
+        let reply = forum.reply(&topic.topic.id, AUTHOR, "reply").unwrap();
+
+        forum.delete_post(&reply.id, AUTHOR).unwrap();
+        let loaded = forum.get_topic(&topic.topic.id, false).unwrap();
+        assert_eq!(loaded.topic.reply_count, 0);
+        assert_eq!(loaded.posts.len(), 1);
+
+        forum.delete_topic(&topic.topic.id, AUTHOR).unwrap();
+        assert!(matches!(
+            forum.get_topic(&topic.topic.id, false),
+            Err(ForumError::TopicNotFound)
+        ));
+        assert!(
+            forum
+                .list_topics(&category.id, 1, 25, false)
+                .unwrap()
+                .is_empty()
+        );
     }
 }

@@ -111,17 +111,49 @@ if [ -z "$topic_id" ]; then
 fi
 
 reply_body="{\"content\":\"smoke reply\"}"
-curl -sSf \
+reply_json="$(curl -sSf \
     -X POST "http://127.0.0.1:$port/api/v1/topics/$topic_id/posts" \
     -H "content-type: application/json" \
     -b "$cookie_jar" \
-    -d "$reply_body" >/dev/null
+    -d "$reply_body")"
+reply_id="$(printf '%s' "$reply_json" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')"
+if [ -z "$reply_id" ]; then
+    echo "failed to parse reply id from forum smoke response" >&2
+    exit 1
+fi
+
+edit_body="{\"content\":\"smoke **edited** reply\"}"
+edited_reply="$(curl -sSf \
+    -X PATCH "http://127.0.0.1:$port/api/v1/posts/$reply_id" \
+    -H "content-type: application/json" \
+    -b "$cookie_jar" \
+    -d "$edit_body")"
+case "$edited_reply" in
+    *"\"revision\":2"* | *"\"revision\": 2"*) ;;
+    *)
+        echo "edited reply response did not include expected revision" >&2
+        exit 1
+        ;;
+esac
 
 topic_loaded="$(curl -sSf "http://127.0.0.1:$port/api/v1/topics/$topic_id")"
 case "$topic_loaded" in
     *"\"reply_count\":1"* | *"\"reply_count\": 1"*) ;;
     *)
         echo "topic response did not include expected reply count" >&2
+        exit 1
+        ;;
+esac
+
+curl -sSf \
+    -X DELETE "http://127.0.0.1:$port/api/v1/posts/$reply_id" \
+    -b "$cookie_jar" >/dev/null
+
+topic_after_delete="$(curl -sSf "http://127.0.0.1:$port/api/v1/topics/$topic_id")"
+case "$topic_after_delete" in
+    *"\"reply_count\":0"* | *"\"reply_count\": 0"*) ;;
+    *)
+        echo "topic response did not include expected reply count after delete" >&2
         exit 1
         ;;
 esac

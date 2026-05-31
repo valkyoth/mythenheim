@@ -1,12 +1,12 @@
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, State},
+    extract::{DefaultBodyLimit, Query, State},
     http::{
         HeaderMap, HeaderValue, StatusCode,
         header::{COOKIE, RETRY_AFTER, SET_COOKIE},
     },
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{get, patch, post},
 };
 use clap::Parser;
 use mythenheim::{
@@ -70,6 +70,7 @@ struct CreateCategoryRequest {
     name: String,
     description: Option<String>,
     parent_id: Option<String>,
+    is_private: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -81,6 +82,17 @@ struct CreateTopicRequest {
 #[derive(Debug, Deserialize)]
 struct CreatePostRequest {
     content: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct EditPostRequest {
+    content: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ListTopicsQuery {
+    page: Option<usize>,
+    page_size: Option<usize>,
 }
 
 #[derive(Debug, Serialize)]
@@ -108,6 +120,7 @@ struct CategoryResponse {
     description: Option<String>,
     parent_id: Option<String>,
     is_locked: bool,
+    is_private: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -221,8 +234,15 @@ fn app_with_state(state: AppState, max_request_body_bytes: usize) -> Router {
             "/api/v1/categories/{category_id}/topics",
             get(list_topics).post(create_topic),
         )
-        .route("/api/v1/topics/{topic_id}", get(get_topic))
+        .route(
+            "/api/v1/topics/{topic_id}",
+            get(get_topic).delete(delete_topic),
+        )
         .route("/api/v1/topics/{topic_id}/posts", post(create_post))
+        .route(
+            "/api/v1/posts/{post_id}",
+            patch(edit_post).delete(delete_post),
+        )
         .layer(DefaultBodyLimit::max(max_request_body_bytes))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -289,8 +309,9 @@ async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
     }
 }
 
-async fn list_categories(State(state): State<AppState>) -> Response {
-    match state.forum.list_categories() {
+async fn list_categories(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let can_read_private = authenticated_user(&state, &headers).is_some();
+    match state.forum.list_categories_for(can_read_private) {
         Ok(categories) => Json(CategoriesResponse {
             categories: categories.into_iter().map(CategoryResponse::from).collect(),
         })
@@ -312,6 +333,7 @@ async fn create_category(
         &payload.name,
         payload.description.as_deref(),
         payload.parent_id.as_deref(),
+        payload.is_private.unwrap_or(false),
     ) {
         Ok(category) => {
             (StatusCode::CREATED, Json(CategoryResponse::from(category))).into_response()
@@ -322,9 +344,17 @@ async fn create_category(
 
 async fn list_topics(
     State(state): State<AppState>,
+    headers: HeaderMap,
     axum::extract::Path(category_id): axum::extract::Path<String>,
+    Query(query): Query<ListTopicsQuery>,
 ) -> Response {
-    match state.forum.list_topics(&category_id, 1, DEFAULT_PAGE_SIZE) {
+    let can_read_private = authenticated_user(&state, &headers).is_some();
+    match state.forum.list_topics(
+        &category_id,
+        query.page.unwrap_or(1),
+        query.page_size.unwrap_or(DEFAULT_PAGE_SIZE),
+        can_read_private,
+    ) {
         Ok(topics) => Json(TopicsResponse {
             topics: topics.into_iter().map(TopicResponse::from).collect(),
         })
@@ -354,9 +384,11 @@ async fn create_topic(
 
 async fn get_topic(
     State(state): State<AppState>,
+    headers: HeaderMap,
     axum::extract::Path(topic_id): axum::extract::Path<String>,
 ) -> Response {
-    match state.forum.get_topic(&topic_id) {
+    let can_read_private = authenticated_user(&state, &headers).is_some();
+    match state.forum.get_topic(&topic_id, can_read_private) {
         Ok(topic) => Json(TopicDetailResponse::from(topic)).into_response(),
         Err(err) => forum_error_response(err),
     }
@@ -374,6 +406,52 @@ async fn create_post(
 
     match state.forum.reply(&topic_id, &user.id, &payload.content) {
         Ok(post) => (StatusCode::CREATED, Json(PostResponse::from(post))).into_response(),
+        Err(err) => forum_error_response(err),
+    }
+}
+
+async fn edit_post(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Path(post_id): axum::extract::Path<String>,
+    Json(payload): Json<EditPostRequest>,
+) -> Response {
+    let Some(user) = authenticated_user(&state, &headers) else {
+        return auth_error_response(AuthError::InvalidSession);
+    };
+
+    match state.forum.edit_post(&post_id, &user.id, &payload.content) {
+        Ok(post) => Json(PostResponse::from(post)).into_response(),
+        Err(err) => forum_error_response(err),
+    }
+}
+
+async fn delete_post(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Path(post_id): axum::extract::Path<String>,
+) -> Response {
+    let Some(user) = authenticated_user(&state, &headers) else {
+        return auth_error_response(AuthError::InvalidSession);
+    };
+
+    match state.forum.delete_post(&post_id, &user.id) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(err) => forum_error_response(err),
+    }
+}
+
+async fn delete_topic(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Path(topic_id): axum::extract::Path<String>,
+) -> Response {
+    let Some(user) = authenticated_user(&state, &headers) else {
+        return auth_error_response(AuthError::InvalidSession);
+    };
+
+    match state.forum.delete_topic(&topic_id, &user.id) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(err) => forum_error_response(err),
     }
 }
@@ -433,6 +511,7 @@ fn forum_error_response(err: ForumError) -> Response {
             StatusCode::NOT_FOUND
         }
         ForumError::CategoryLocked | ForumError::TopicLocked => StatusCode::CONFLICT,
+        ForumError::Forbidden => StatusCode::FORBIDDEN,
         ForumError::StorePoisoned => StatusCode::INTERNAL_SERVER_ERROR,
     };
 
@@ -466,6 +545,7 @@ impl From<Category> for CategoryResponse {
             description: category.description,
             parent_id: category.parent_id,
             is_locked: category.is_locked,
+            is_private: category.is_private,
         }
     }
 }
@@ -825,6 +905,30 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(reply_response.status(), StatusCode::CREATED);
+        let reply = body_json(reply_response).await;
+        let reply_id = reply["id"].as_str().unwrap();
+
+        let edit_response = app
+            .clone()
+            .oneshot(method_json_request_with_cookie(
+                "PATCH",
+                &format!("/api/v1/posts/{reply_id}"),
+                &cookie,
+                json!({
+                    "content": "edited **reply**"
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(edit_response.status(), StatusCode::OK);
+        let edited = body_json(edit_response).await;
+        assert_eq!(edited["revision"], 2);
+        assert!(
+            edited["content_html"]
+                .as_str()
+                .unwrap()
+                .contains("<strong>reply</strong>")
+        );
 
         let get_topic = app
             .clone()
@@ -842,6 +946,7 @@ mod tests {
         assert_eq!(loaded["posts"].as_array().unwrap().len(), 2);
 
         let list_topics = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .uri(format!("/api/v1/categories/{category_id}/topics"))
@@ -853,6 +958,138 @@ mod tests {
         assert_eq!(list_topics.status(), StatusCode::OK);
         let topics = body_json(list_topics).await;
         assert_eq!(topics["topics"].as_array().unwrap().len(), 1);
+
+        let delete_reply = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/api/v1/posts/{reply_id}"))
+                    .header(COOKIE, cookie.as_str())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(delete_reply.status(), StatusCode::NO_CONTENT);
+
+        let get_after_delete = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v1/topics/{topic_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(get_after_delete.status(), StatusCode::OK);
+        let loaded_after_delete = body_json(get_after_delete).await;
+        assert_eq!(loaded_after_delete["topic"]["reply_count"], 0);
+        assert_eq!(loaded_after_delete["posts"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn private_categories_require_session_for_reads() {
+        let app = app();
+        let cookie = register_and_login(&app).await;
+
+        let category_response = app
+            .clone()
+            .oneshot(json_request_with_cookie(
+                "/api/v1/categories",
+                &cookie,
+                json!({
+                    "name": "Staff",
+                    "description": "Private discussion",
+                    "is_private": true
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(category_response.status(), StatusCode::CREATED);
+        let category = body_json(category_response).await;
+        assert_eq!(category["is_private"], true);
+        let category_id = category["id"].as_str().unwrap();
+
+        let topic_response = app
+            .clone()
+            .oneshot(json_request_with_cookie(
+                &format!("/api/v1/categories/{category_id}/topics"),
+                &cookie,
+                json!({
+                    "title": "Staff Topic",
+                    "content": "private body"
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(topic_response.status(), StatusCode::CREATED);
+        let topic = body_json(topic_response).await;
+        let topic_id = topic["topic"]["id"].as_str().unwrap();
+
+        let anonymous_categories = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/categories")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(anonymous_categories.status(), StatusCode::OK);
+        assert_eq!(
+            body_json(anonymous_categories).await["categories"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
+
+        let authenticated_categories = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/categories")
+                    .header(COOKIE, cookie.as_str())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(authenticated_categories.status(), StatusCode::OK);
+        assert_eq!(
+            body_json(authenticated_categories).await["categories"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let anonymous_topic = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v1/topics/{topic_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(anonymous_topic.status(), StatusCode::NOT_FOUND);
+
+        let authenticated_topic = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v1/topics/{topic_id}"))
+                    .header(COOKIE, cookie.as_str())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(authenticated_topic.status(), StatusCode::OK);
     }
 
     async fn register_and_login(app: &Router) -> String {
@@ -906,8 +1143,17 @@ mod tests {
         cookie: &str,
         payload: serde_json::Value,
     ) -> Request<Body> {
+        method_json_request_with_cookie("POST", uri, cookie, payload)
+    }
+
+    fn method_json_request_with_cookie(
+        method: &str,
+        uri: &str,
+        cookie: &str,
+        payload: serde_json::Value,
+    ) -> Request<Body> {
         Request::builder()
-            .method("POST")
+            .method(method)
             .uri(uri)
             .header(CONTENT_TYPE, "application/json")
             .header(COOKIE, cookie)
