@@ -153,7 +153,7 @@ Current preview:
 
 - In-memory moderation service with report and approval queues.
 - Preview HTTP routes for post reports, queue reads, warnings, shadowban
-  changes, and audit reads.
+  changes, queue resolution, and audit reads.
 - Warning records with active warning points.
 - Automatic mute and ban state at configured warning point thresholds.
 - Shadowban state and forum read filtering that hides shadowbanned authors
@@ -163,7 +163,8 @@ Current preview:
 - Audit events capture previous and new user moderation state for stateful
   staff actions.
 - Staff-facing moderation routes require explicit capabilities such as
-  `moderation.queue.read`, `user.warn`, `user.shadowban`, and `audit.read`.
+  `moderation.queue.read`, `moderation.queue.write`, `user.warn`,
+  `user.shadowban`, and `audit.read`.
 
 Done when:
 

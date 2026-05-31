@@ -120,6 +120,11 @@ struct SetShadowbanRequest {
 }
 
 #[derive(Debug, Deserialize)]
+struct ResolveQueueItemRequest {
+    resolution: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct ListTopicsQuery {
     page: Option<usize>,
     page_size: Option<usize>,
@@ -360,7 +365,15 @@ fn app_with_state(state: AppState, max_request_body_bytes: usize) -> Router {
         )
         .route("/api/v1/posts/{post_id}/reports", post(report_post))
         .route("/api/v1/moderation/reports", get(list_reports))
+        .route(
+            "/api/v1/moderation/reports/{report_id}/resolve",
+            post(resolve_report),
+        )
         .route("/api/v1/moderation/approvals", get(list_approvals))
+        .route(
+            "/api/v1/moderation/approvals/{approval_id}/resolve",
+            post(resolve_approval),
+        )
         .route("/api/v1/moderation/warnings", post(issue_warning))
         .route("/api/v1/moderation/audit", get(list_audit_events))
         .route(
@@ -731,6 +744,28 @@ async fn list_reports(State(state): State<AppState>, headers: HeaderMap) -> Resp
     }
 }
 
+async fn resolve_report(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Path(report_id): axum::extract::Path<String>,
+    Json(payload): Json<ResolveQueueItemRequest>,
+) -> Response {
+    let Some(user) = authenticated_user(&state, &headers) else {
+        return auth_error_response(AuthError::InvalidSession);
+    };
+    if !has_capability(&state, &user, "moderation.queue.write", None, None) {
+        return forum_error_response(ForumError::Forbidden);
+    }
+
+    match state
+        .moderation
+        .resolve_report(&user.id, &report_id, &payload.resolution)
+    {
+        Ok(report) => Json(ReportResponse::from(report)).into_response(),
+        Err(err) => moderation_error_response(err),
+    }
+}
+
 async fn list_approvals(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let Some(user) = authenticated_user(&state, &headers) else {
         return auth_error_response(AuthError::InvalidSession);
@@ -747,6 +782,28 @@ async fn list_approvals(State(state): State<AppState>, headers: HeaderMap) -> Re
                 .collect(),
         })
         .into_response(),
+        Err(err) => moderation_error_response(err),
+    }
+}
+
+async fn resolve_approval(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Path(approval_id): axum::extract::Path<String>,
+    Json(payload): Json<ResolveQueueItemRequest>,
+) -> Response {
+    let Some(user) = authenticated_user(&state, &headers) else {
+        return auth_error_response(AuthError::InvalidSession);
+    };
+    if !has_capability(&state, &user, "moderation.queue.write", None, None) {
+        return forum_error_response(ForumError::Forbidden);
+    }
+
+    match state
+        .moderation
+        .resolve_approval(&user.id, &approval_id, &payload.resolution)
+    {
+        Ok(approval) => Json(ApprovalItemResponse::from(approval)).into_response(),
         Err(err) => moderation_error_response(err),
     }
 }
@@ -954,6 +1011,10 @@ fn forum_error_response(err: ForumError) -> Response {
 fn moderation_error_response(err: ModerationError) -> Response {
     let status = match &err {
         ModerationError::InvalidReason | ModerationError::InvalidPoints => StatusCode::BAD_REQUEST,
+        ModerationError::ReportNotFound | ModerationError::ApprovalNotFound => {
+            StatusCode::NOT_FOUND
+        }
+        ModerationError::AlreadyResolved => StatusCode::CONFLICT,
         ModerationError::StorePoisoned => StatusCode::INTERNAL_SERVER_ERROR,
     };
 
@@ -1114,7 +1175,9 @@ fn queue_status_label(status: QueueStatus) -> &'static str {
 fn audit_action_label(action: AuditAction) -> &'static str {
     match action {
         AuditAction::ReportCreated => "report.created",
+        AuditAction::ReportResolved => "report.resolved",
         AuditAction::ApprovalQueued => "approval.queued",
+        AuditAction::ApprovalResolved => "approval.resolved",
         AuditAction::WarningIssued => "warning.issued",
         AuditAction::UserShadowbanSet => "user.shadowban.set",
     }
@@ -1832,6 +1895,20 @@ mod tests {
         let report = body_json(report).await;
         assert_eq!(report["target_id"], post_id);
         assert_eq!(report["status"], "open");
+        let report_id = report["id"].as_str().unwrap();
+
+        let resolve_report = app
+            .clone()
+            .oneshot(json_request_with_cookie(
+                &format!("/api/v1/moderation/reports/{report_id}/resolve"),
+                &cookie,
+                json!({
+                    "resolution": "handled"
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resolve_report.status(), StatusCode::FORBIDDEN);
 
         let reports = app
             .oneshot(
@@ -1886,6 +1963,22 @@ mod tests {
                 .len(),
             1
         );
+        let report_id = body_json(
+            app.clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/v1/moderation/reports")
+                        .header(COOKIE, cookie.as_str())
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap(),
+        )
+        .await["reports"][0]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
 
         let approvals = app
             .clone()
@@ -1906,6 +1999,69 @@ mod tests {
                 .len(),
             1
         );
+        let approval_id = body_json(
+            app.clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/v1/moderation/approvals")
+                        .header(COOKIE, cookie.as_str())
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap(),
+        )
+        .await["approvals"][0]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        let resolve_report = app
+            .clone()
+            .oneshot(json_request_with_cookie(
+                &format!("/api/v1/moderation/reports/{report_id}/resolve"),
+                &cookie,
+                json!({
+                    "resolution": "deleted duplicate"
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resolve_report.status(), StatusCode::OK);
+        assert_eq!(body_json(resolve_report).await["status"], "resolved");
+
+        let resolve_approval = app
+            .clone()
+            .oneshot(json_request_with_cookie(
+                &format!("/api/v1/moderation/approvals/{approval_id}/resolve"),
+                &cookie,
+                json!({
+                    "resolution": "approved"
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resolve_approval.status(), StatusCode::OK);
+        assert_eq!(body_json(resolve_approval).await["status"], "resolved");
+
+        let open_reports = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/moderation/reports")
+                    .header(COOKIE, cookie.as_str())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(open_reports.status(), StatusCode::OK);
+        assert!(
+            body_json(open_reports).await["reports"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
 
         let audit = app
             .oneshot(
@@ -1920,7 +2076,7 @@ mod tests {
         assert_eq!(audit.status(), StatusCode::OK);
         assert_eq!(
             body_json(audit).await["events"].as_array().unwrap().len(),
-            2
+            4
         );
     }
 
@@ -2074,6 +2230,7 @@ mod tests {
                 Capability::parse_static("post.edit.own"),
                 Capability::parse_static("post.delete.own"),
                 Capability::parse_static("moderation.queue.read"),
+                Capability::parse_static("moderation.queue.write"),
                 Capability::parse_static("user.warn"),
                 Capability::parse_static("user.shadowban"),
                 Capability::parse_static("audit.read"),

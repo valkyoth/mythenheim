@@ -54,7 +54,9 @@ pub struct UserModerationState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuditAction {
     ReportCreated,
+    ReportResolved,
     ApprovalQueued,
+    ApprovalResolved,
     WarningIssued,
     UserShadowbanSet,
 }
@@ -74,6 +76,9 @@ pub struct AuditEvent {
 pub enum ModerationError {
     InvalidReason,
     InvalidPoints,
+    ReportNotFound,
+    ApprovalNotFound,
+    AlreadyResolved,
     StorePoisoned,
 }
 
@@ -172,6 +177,70 @@ impl ModerationService {
             "approval queued",
         );
         Ok(item)
+    }
+
+    pub fn resolve_report(
+        &self,
+        actor_id: &str,
+        report_id: &str,
+        resolution: &str,
+    ) -> Result<Report, ModerationError> {
+        let resolution = clean_reason(resolution)?;
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| ModerationError::StorePoisoned)?;
+        let report = state
+            .reports
+            .get_mut(report_id)
+            .ok_or(ModerationError::ReportNotFound)?;
+        if report.status == QueueStatus::Resolved {
+            return Err(ModerationError::AlreadyResolved);
+        }
+        report.status = QueueStatus::Resolved;
+        let resolved = report.clone();
+        push_audit(
+            &mut state,
+            actor_id,
+            AuditAction::ReportResolved,
+            &resolved.target_id,
+            None,
+            None,
+            &format!("report resolved: {resolution}"),
+        );
+        Ok(resolved)
+    }
+
+    pub fn resolve_approval(
+        &self,
+        actor_id: &str,
+        approval_id: &str,
+        resolution: &str,
+    ) -> Result<ApprovalItem, ModerationError> {
+        let resolution = clean_reason(resolution)?;
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| ModerationError::StorePoisoned)?;
+        let approval = state
+            .approvals
+            .get_mut(approval_id)
+            .ok_or(ModerationError::ApprovalNotFound)?;
+        if approval.status == QueueStatus::Resolved {
+            return Err(ModerationError::AlreadyResolved);
+        }
+        approval.status = QueueStatus::Resolved;
+        let resolved = approval.clone();
+        push_audit(
+            &mut state,
+            actor_id,
+            AuditAction::ApprovalResolved,
+            &resolved.target_id,
+            None,
+            None,
+            &format!("approval resolved: {resolution}"),
+        );
+        Ok(resolved)
     }
 
     pub fn issue_warning(
@@ -333,6 +402,9 @@ impl fmt::Display for ModerationError {
         match self {
             Self::InvalidReason => formatter.write_str("invalid moderation reason"),
             Self::InvalidPoints => formatter.write_str("invalid warning points"),
+            Self::ReportNotFound => formatter.write_str("report not found"),
+            Self::ApprovalNotFound => formatter.write_str("approval item not found"),
+            Self::AlreadyResolved => formatter.write_str("moderation item is already resolved"),
             Self::StorePoisoned => formatter.write_str("moderation store lock is poisoned"),
         }
     }
@@ -426,6 +498,53 @@ mod tests {
             vec!["report:1", "report:2"]
         );
         assert_eq!(moderation.open_approvals().unwrap()[0].id, "approval:1");
+    }
+
+    #[test]
+    fn resolving_queue_items_closes_them_and_writes_audit() {
+        let moderation = ModerationService::new_in_memory();
+        let report = moderation.report("user:1", "post:1", "spam").unwrap();
+        let approval = moderation
+            .queue_approval("system:filters", "user:2", "post:2", "low trust link")
+            .unwrap();
+
+        let resolved_report = moderation
+            .resolve_report("user:mod", &report.id, "deleted duplicate")
+            .unwrap();
+        let resolved_approval = moderation
+            .resolve_approval("user:mod", &approval.id, "approved")
+            .unwrap();
+
+        assert_eq!(resolved_report.status, QueueStatus::Resolved);
+        assert_eq!(resolved_approval.status, QueueStatus::Resolved);
+        assert!(moderation.open_reports().unwrap().is_empty());
+        assert!(moderation.open_approvals().unwrap().is_empty());
+
+        let audit = moderation.audit_events().unwrap();
+        assert_eq!(audit.len(), 4);
+        assert_eq!(audit[2].action, AuditAction::ReportResolved);
+        assert_eq!(audit[2].target_id, "post:1");
+        assert_eq!(audit[3].action, AuditAction::ApprovalResolved);
+        assert_eq!(audit[3].target_id, "post:2");
+    }
+
+    #[test]
+    fn resolved_queue_items_cannot_be_resolved_again() {
+        let moderation = ModerationService::new_in_memory();
+        let report = moderation.report("user:1", "post:1", "spam").unwrap();
+
+        moderation
+            .resolve_report("user:mod", &report.id, "handled")
+            .unwrap();
+
+        assert!(matches!(
+            moderation.resolve_report("user:mod", &report.id, "handled again"),
+            Err(ModerationError::AlreadyResolved)
+        ));
+        assert!(matches!(
+            moderation.resolve_approval("user:mod", "approval:missing", "handled"),
+            Err(ModerationError::ApprovalNotFound)
+        ));
     }
 
     #[test]
