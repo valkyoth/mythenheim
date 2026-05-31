@@ -37,6 +37,38 @@ pub struct Warning {
     pub active: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModerationMacroAction {
+    ResolveReport {
+        report_id: String,
+        resolution: String,
+    },
+    ResolveApproval {
+        approval_id: String,
+        resolution: String,
+    },
+    IssueWarning {
+        target_user_id: String,
+        target_id: Option<String>,
+        reason: String,
+        points: u32,
+    },
+    ExpireWarning {
+        warning_id: String,
+        reason: String,
+    },
+    SetShadowban {
+        target_user_id: String,
+        shadowbanned: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MacroExecution {
+    pub action_count: usize,
+    pub audit_event_count: usize,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QueueStatus {
     Open,
@@ -82,6 +114,7 @@ pub enum ModerationError {
     WarningNotFound,
     AlreadyResolved,
     WarningInactive,
+    EmptyMacro,
     StorePoisoned,
 }
 
@@ -90,7 +123,7 @@ pub struct ModerationService {
     inner: Arc<Mutex<ModerationState>>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 struct ModerationState {
     next_report_id: u64,
     next_approval_id: u64,
@@ -293,6 +326,75 @@ impl ModerationService {
         Ok(warning)
     }
 
+    pub fn execute_macro(
+        &self,
+        actor_id: &str,
+        actions: &[ModerationMacroAction],
+    ) -> Result<MacroExecution, ModerationError> {
+        if actions.is_empty() {
+            return Err(ModerationError::EmptyMacro);
+        }
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| ModerationError::StorePoisoned)?;
+        let mut candidate = state.clone();
+        let audit_start = candidate.audit_events.len();
+
+        for action in actions {
+            match action {
+                ModerationMacroAction::ResolveReport {
+                    report_id,
+                    resolution,
+                } => {
+                    resolve_report_in_state(&mut candidate, actor_id, report_id, resolution)?;
+                }
+                ModerationMacroAction::ResolveApproval {
+                    approval_id,
+                    resolution,
+                } => {
+                    resolve_approval_in_state(&mut candidate, actor_id, approval_id, resolution)?;
+                }
+                ModerationMacroAction::IssueWarning {
+                    target_user_id,
+                    target_id,
+                    reason,
+                    points,
+                } => {
+                    issue_warning_in_state(
+                        &mut candidate,
+                        actor_id,
+                        target_user_id,
+                        target_id.as_deref(),
+                        reason,
+                        *points,
+                    )?;
+                }
+                ModerationMacroAction::ExpireWarning { warning_id, reason } => {
+                    expire_warning_in_state(&mut candidate, actor_id, warning_id, reason)?;
+                }
+                ModerationMacroAction::SetShadowban {
+                    target_user_id,
+                    shadowbanned,
+                } => {
+                    set_shadowbanned_in_state(
+                        &mut candidate,
+                        actor_id,
+                        target_user_id,
+                        *shadowbanned,
+                    );
+                }
+            }
+        }
+
+        let audit_event_count = candidate.audit_events.len().saturating_sub(audit_start);
+        *state = candidate;
+        Ok(MacroExecution {
+            action_count: actions.len(),
+            audit_event_count,
+        })
+    }
+
     pub fn expire_warning(
         &self,
         actor_id: &str,
@@ -460,12 +562,180 @@ impl fmt::Display for ModerationError {
             Self::WarningNotFound => formatter.write_str("warning not found"),
             Self::AlreadyResolved => formatter.write_str("moderation item is already resolved"),
             Self::WarningInactive => formatter.write_str("warning is already inactive"),
+            Self::EmptyMacro => formatter.write_str("moderation macro must contain actions"),
             Self::StorePoisoned => formatter.write_str("moderation store lock is poisoned"),
         }
     }
 }
 
 impl std::error::Error for ModerationError {}
+
+fn resolve_report_in_state(
+    state: &mut ModerationState,
+    actor_id: &str,
+    report_id: &str,
+    resolution: &str,
+) -> Result<Report, ModerationError> {
+    let resolution = clean_reason(resolution)?;
+    let report = state
+        .reports
+        .get_mut(report_id)
+        .ok_or(ModerationError::ReportNotFound)?;
+    if report.status == QueueStatus::Resolved {
+        return Err(ModerationError::AlreadyResolved);
+    }
+    report.status = QueueStatus::Resolved;
+    let resolved = report.clone();
+    push_audit(
+        state,
+        actor_id,
+        AuditAction::ReportResolved,
+        &resolved.target_id,
+        None,
+        None,
+        &format!("report resolved: {resolution}"),
+    );
+    Ok(resolved)
+}
+
+fn resolve_approval_in_state(
+    state: &mut ModerationState,
+    actor_id: &str,
+    approval_id: &str,
+    resolution: &str,
+) -> Result<ApprovalItem, ModerationError> {
+    let resolution = clean_reason(resolution)?;
+    let approval = state
+        .approvals
+        .get_mut(approval_id)
+        .ok_or(ModerationError::ApprovalNotFound)?;
+    if approval.status == QueueStatus::Resolved {
+        return Err(ModerationError::AlreadyResolved);
+    }
+    approval.status = QueueStatus::Resolved;
+    let resolved = approval.clone();
+    push_audit(
+        state,
+        actor_id,
+        AuditAction::ApprovalResolved,
+        &resolved.target_id,
+        None,
+        None,
+        &format!("approval resolved: {resolution}"),
+    );
+    Ok(resolved)
+}
+
+fn issue_warning_in_state(
+    state: &mut ModerationState,
+    actor_id: &str,
+    target_user_id: &str,
+    target_id: Option<&str>,
+    reason: &str,
+    points: u32,
+) -> Result<Warning, ModerationError> {
+    if points == 0 {
+        return Err(ModerationError::InvalidPoints);
+    }
+    let reason = clean_reason(reason)?;
+    let previous_state = state.users.get(target_user_id).cloned().unwrap_or_default();
+    let warning = Warning {
+        id: format!("warning:{}", state.next_warning_id),
+        actor_id: actor_id.to_owned(),
+        target_user_id: target_user_id.to_owned(),
+        target_id: target_id.map(ToOwned::to_owned),
+        reason,
+        points,
+        active: true,
+    };
+    state.next_warning_id += 1;
+    state
+        .warning_ids_by_user
+        .entry(target_user_id.to_owned())
+        .or_default()
+        .push(warning.id.clone());
+    state.warnings.insert(warning.id.clone(), warning.clone());
+    recompute_user_state(state, target_user_id);
+    let new_state = state.users.get(target_user_id).cloned().unwrap_or_default();
+    push_audit(
+        state,
+        actor_id,
+        AuditAction::WarningIssued,
+        target_user_id,
+        Some(previous_state),
+        Some(new_state),
+        "warning issued",
+    );
+    Ok(warning)
+}
+
+fn expire_warning_in_state(
+    state: &mut ModerationState,
+    actor_id: &str,
+    warning_id: &str,
+    reason: &str,
+) -> Result<(Warning, UserModerationState), ModerationError> {
+    let reason = clean_reason(reason)?;
+    let target_user_id = {
+        let warning = state
+            .warnings
+            .get(warning_id)
+            .ok_or(ModerationError::WarningNotFound)?;
+        if !warning.active {
+            return Err(ModerationError::WarningInactive);
+        }
+        warning.target_user_id.clone()
+    };
+    let previous_state = state
+        .users
+        .get(&target_user_id)
+        .cloned()
+        .unwrap_or_default();
+    let warning = state
+        .warnings
+        .get_mut(warning_id)
+        .ok_or(ModerationError::WarningNotFound)?;
+    warning.active = false;
+    let expired = warning.clone();
+    recompute_user_state(state, &target_user_id);
+    let new_state = state
+        .users
+        .get(&target_user_id)
+        .cloned()
+        .unwrap_or_default();
+    push_audit(
+        state,
+        actor_id,
+        AuditAction::WarningExpired,
+        &target_user_id,
+        Some(previous_state),
+        Some(new_state.clone()),
+        &format!("warning expired: {reason}"),
+    );
+    Ok((expired, new_state))
+}
+
+fn set_shadowbanned_in_state(
+    state: &mut ModerationState,
+    actor_id: &str,
+    target_user_id: &str,
+    shadowbanned: bool,
+) -> UserModerationState {
+    let previous_state = state.users.get(target_user_id).cloned().unwrap_or_default();
+    let next_state = state.users.entry(target_user_id.to_owned()).or_default();
+    next_state.shadowbanned = shadowbanned;
+    let new_state = next_state.clone();
+    push_audit(
+        state,
+        actor_id,
+        AuditAction::UserShadowbanSet,
+        target_user_id,
+        Some(previous_state),
+        Some(new_state.clone()),
+        "shadowban changed",
+    );
+    new_state
+}
 
 fn clean_reason(value: &str) -> Result<String, ModerationError> {
     let trimmed = value.trim();
@@ -766,6 +1036,103 @@ mod tests {
             moderation.expire_warning("user:mod", "warning:missing", "missing"),
             Err(ModerationError::WarningNotFound)
         ));
+    }
+
+    #[test]
+    fn moderation_macro_applies_actions_transactionally() {
+        let moderation = ModerationService::new_in_memory();
+        let report = moderation.report("user:1", "post:1", "spam").unwrap();
+        let approval = moderation
+            .queue_approval("system:filters", "user:2", "post:2", "low trust link")
+            .unwrap();
+
+        let execution = moderation
+            .execute_macro(
+                "user:mod",
+                &[
+                    ModerationMacroAction::ResolveReport {
+                        report_id: report.id,
+                        resolution: "deleted duplicate".to_owned(),
+                    },
+                    ModerationMacroAction::ResolveApproval {
+                        approval_id: approval.id,
+                        resolution: "approved".to_owned(),
+                    },
+                    ModerationMacroAction::IssueWarning {
+                        target_user_id: "user:2".to_owned(),
+                        target_id: Some("post:2".to_owned()),
+                        reason: "posted spam".to_owned(),
+                        points: 5,
+                    },
+                    ModerationMacroAction::SetShadowban {
+                        target_user_id: "user:2".to_owned(),
+                        shadowbanned: true,
+                    },
+                ],
+            )
+            .unwrap();
+
+        assert_eq!(
+            execution,
+            MacroExecution {
+                action_count: 4,
+                audit_event_count: 4,
+            }
+        );
+        assert!(moderation.open_reports().unwrap().is_empty());
+        assert!(moderation.open_approvals().unwrap().is_empty());
+        assert_eq!(
+            moderation.user_state("user:2").unwrap(),
+            UserModerationState {
+                active_warning_points: 5,
+                muted: true,
+                banned: false,
+                shadowbanned: true,
+            }
+        );
+        assert_eq!(moderation.audit_events().unwrap().len(), 6);
+    }
+
+    #[test]
+    fn moderation_macro_rolls_back_all_actions_on_failure() {
+        let moderation = ModerationService::new_in_memory();
+        let report = moderation.report("user:1", "post:1", "spam").unwrap();
+
+        let err = moderation
+            .execute_macro(
+                "user:mod",
+                &[
+                    ModerationMacroAction::ResolveReport {
+                        report_id: report.id,
+                        resolution: "would resolve".to_owned(),
+                    },
+                    ModerationMacroAction::IssueWarning {
+                        target_user_id: "user:2".to_owned(),
+                        target_id: None,
+                        reason: "invalid zero-point warning".to_owned(),
+                        points: 0,
+                    },
+                ],
+            )
+            .unwrap_err();
+
+        assert_eq!(err, ModerationError::InvalidPoints);
+        assert_eq!(moderation.open_reports().unwrap().len(), 1);
+        assert_eq!(
+            moderation.user_state("user:2").unwrap(),
+            UserModerationState::default()
+        );
+        assert_eq!(moderation.audit_events().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn moderation_macro_rejects_empty_action_lists() {
+        let moderation = ModerationService::new_in_memory();
+
+        assert_eq!(
+            moderation.execute_macro("user:mod", &[]).unwrap_err(),
+            ModerationError::EmptyMacro
+        );
     }
 
     #[test]

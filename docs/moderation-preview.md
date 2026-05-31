@@ -14,6 +14,8 @@ APIs.
   and shadowban state.
 - `AuditEvent` records staff and automated moderation actions with previous
   and new user moderation state where the action changes a user.
+- `ModerationMacroAction` describes reusable moderation action sequences such
+  as resolving a report, warning a user, and shadowbanning the same account.
 
 ## Routes
 
@@ -48,11 +50,14 @@ require `audit.read`.
 - Audit events are append-only in the preview service API.
 - Resolving a report or approval item removes it from the open queue and writes
   a resolution audit event.
+- Moderation macros execute transactionally in the preview service: if any
+  action fails, no queue, warning, user-state, or audit changes from that macro
+  are committed.
 - Staff-facing preview routes are capability-gated before they call the
   moderation service.
 
 ## Current Limits
 
 The service is still in-memory. Persistent queues, staff dashboard routes,
-warning expiration, transactional moderation macros, and delayed moderation
+stored macro definitions, staff macro execution routes, and delayed moderation
 jobs remain follow-up `0.15.0` work.

@@ -1040,7 +1040,9 @@ fn forum_error_response(err: ForumError) -> Response {
 
 fn moderation_error_response(err: ModerationError) -> Response {
     let status = match &err {
-        ModerationError::InvalidReason | ModerationError::InvalidPoints => StatusCode::BAD_REQUEST,
+        ModerationError::InvalidReason
+        | ModerationError::InvalidPoints
+        | ModerationError::EmptyMacro => StatusCode::BAD_REQUEST,
         ModerationError::ReportNotFound
         | ModerationError::ApprovalNotFound
         | ModerationError::WarningNotFound => StatusCode::NOT_FOUND,

@@ -158,6 +158,7 @@ Current preview:
 - Automatic mute and ban state at configured warning point thresholds.
 - Warning expiration that marks warnings inactive, recomputes points, and
   audits the state transition.
+- Transactional moderation macro execution in the preview service.
 - Shadowban state and forum read filtering that hides shadowbanned authors
   from other users while preserving the author's own view.
 - Append-only audit events for report creation, approval queuing, warning
