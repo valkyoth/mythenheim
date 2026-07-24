@@ -45,7 +45,7 @@ Local development origin on this machine, when DNS/proxying is needed:
 
 ## Current Scope
 
-- Rust `1.96.0`, edition `2024`.
+- Rust `1.97.1`, edition `2024`.
 - Axum health service.
 - TOML config loader and validator.
 - Safe Markdown preview renderer backed by `pulldown-cmark` and `ammonia`.

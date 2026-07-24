@@ -11,7 +11,7 @@ case "$version" in
 esac
 
 grep -q '^license = "EUPL-1.2"$' Cargo.toml
-grep -q '^rust-version = "1.96"$' Cargo.toml
+grep -q '^rust-version = "1.97.1"$' Cargo.toml
 test -f LICENSE
 test -f NOTICE
 test -f SECURITY.md

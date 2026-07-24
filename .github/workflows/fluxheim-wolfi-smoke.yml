@@ -18,12 +18,12 @@ jobs:
 
     steps:
       - name: Checkout Mythenheim
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7.0.1
         with:
           path: mythenheim
 
       - name: Checkout Fluxheim
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7.0.1
         with:
           repository: valkyoth/fluxheim
           path: fluxheim
